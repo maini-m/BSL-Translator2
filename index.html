@@ -80,6 +80,18 @@
   .caption .spelling{color:#7fe3d9;border-bottom:3px solid #7fe3d9;letter-spacing:.08em}
   .toggle{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.92rem;cursor:pointer}
   .toggle input{width:18px;height:18px;accent-color:var(--accent)}
+  .gloss{margin-top:8px;font-size:.9rem;color:var(--muted)}
+  .gloss strong{color:var(--ink);font-weight:600}
+  .gloss .spelling{color:var(--accent);border-bottom:2px solid var(--accent);letter-spacing:.08em}
+  .alts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .alt{font:inherit;font-size:.9rem;border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;cursor:pointer;color:var(--ink)}
+  .alt:hover{border-color:var(--accent)}
+  .alt.chosen{background:var(--accent-soft);border-color:var(--accent)}
+  .tag{display:inline-block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:2px 7px;border-radius:6px;background:#eeeae2;color:var(--muted);margin-left:6px;vertical-align:middle}
+  .tag.ai{background:#efe6ff;color:#5b2bb5}
+  details.ai{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfaf7}
+  details.ai summary{cursor:pointer;font-weight:600}
+  details.ai input[type=password],details.ai input[type=text]{margin-top:6px}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -131,8 +143,14 @@
     </div>
 
     <div id="tab-translate" class="tab">
-      <h2>Translation</h2>
-      <div id="transcript" class="transcript"><span class="empty">Signed words will appear here.</span></div>
+      <h2>Translation <span id="engTag" class="tag" hidden>Basic</span></h2>
+      <div id="transcript" class="transcript" aria-live="polite"><span class="empty">Signed words will appear here as English sentences.</span></div>
+      <div id="glossLine" class="gloss" hidden></div>
+      <div id="removedNote" class="hint" hidden></div>
+      <div id="altBox" hidden>
+        <div class="small" style="margin-top:10px">Other ways to say it (tap to use):</div>
+        <div id="altList" class="alts"></div>
+      </div>
       <div class="row">
         <button id="speakBtn" class="btn primary">🔊 Speak</button>
         <button id="spaceBtn" class="btn" hidden>Finish word</button>
@@ -141,6 +159,22 @@
       </div>
       <label class="toggle"><input type="checkbox" id="autoSpeak" checked> Speak each word out loud as it's signed</label>
       <label class="toggle"><input type="checkbox" id="showCaptions" checked> Show live captions on the video</label>
+      <details class="ai" id="aiBox">
+        <summary>✨ Better grammar with AI (optional)</summary>
+        <p class="hint">Without this, built-in rules tidy the sentence (works offline). With a Google Gemini API key, AI rewrites it into natural English and suggests alternatives.</p>
+        <p class="hint"><strong>Only the recognised words are sent to Google</strong>, never video. The key stays in this browser; <strong>never put it in GitHub</strong>. Google's terms require API users to be 18+, so ask a teacher or mentor to create the key at aistudio.google.com.</p>
+        <label class="small" for="aiKey">Gemini API key</label>
+        <input id="aiKey" type="password" placeholder="Paste key here" autocomplete="off">
+        <label class="small" for="aiModel" style="display:block;margin-top:8px">Model</label>
+        <input id="aiModel" type="text" value="gemini-2.5-flash" autocomplete="off">
+        <label class="toggle"><input type="checkbox" id="aiAuto" checked> Improve automatically after each word</label>
+        <div class="row">
+          <button id="aiSaveBtn" class="btn primary">Save key</button>
+          <button id="aiNowBtn" class="btn">Improve now</button>
+          <button id="aiForgetBtn" class="btn">Forget key</button>
+        </div>
+        <div id="aiStatus" class="msg"></div>
+      </details>
       <p id="spellHelp" class="hint" hidden>Hold each letter steady until it appears. Lower your hands for a moment to finish a word, or before repeating the same letter.</p>
       <hr>
       <label class="small" for="thr">Confidence needed: <strong id="thrVal">60%</strong></label>
@@ -230,6 +264,7 @@ const STORE_KEY = "bsl-translator-samples-v1";
 const OWN_KEY = "bsl-own-letters-v1";
 const TAUGHT_KEY = "bsl-taught-letters-v1";
 const PREFS_KEY = "bsl-prefs-v1";
+const AI_KEY = "bsl-ai-key-v1";
 const EXTRA_LETTERS = ["C", "H", "J", "Y"]; // not in the Kaggle dataset: only learnable from your own examples
 const SIGMA = 0.5, TAU = 1.3, KNN = 7;      // personal matching: closeness scale, "not close enough" distance, neighbours
 const SMOOTH = 10;                          // average predictions over this many frames
@@ -485,7 +520,7 @@ function endSpellWord() {
   const word = spellWord.charAt(0) + spellWord.slice(1).toLowerCase();
   transcript.push(word);
   spellWord = "";
-  renderTranscript();
+  signsChanged();
   sayNow(word);
 }
 
@@ -726,7 +761,7 @@ function recognise(now) {
       now - lastEmitTime > 1000 && (r.label !== lastEmitted || now - lastEmitTime > 3000)) {
     transcript.push(r.label);
     lastEmitted = r.label; lastEmitTime = now;
-    renderTranscript();
+    signsChanged();
     sayNow(r.label);
   }
 }
@@ -740,23 +775,227 @@ function showPred(label, conf, meta) {
   $("predMeta").textContent = label ? `${meta} · ${Math.round(conf * 100)}% confidence` : meta;
 }
 
-function renderCaption() {
+// ---------- Built-in sentence tidy-up (no internet needed) ----------
+// BSL word order differs from English: the topic often comes first, question words
+// (what, where…) come at the END, and small words like "is", "the", "am" aren't signed.
+// These rules turn common patterns into English and clean up recognition noise.
+const WH = "what|where|who|why|how|when|which";
+const GRAMMAR_RULES = [
+  // names
+  [/\b(?:me|my|i) name (?:me |my )?(\S+)/g, "my name is $1 ."],
+  [/\bname (?:me|my) (\S+)/g, "my name is $1 ."],
+  // questions BSL puts the question word last on
+  [/\b(?:you|your) name what\b|\bname (?:you|your) what\b|\bwhat (?:you|your) name\b|\bwhat name (?:you|your)\b/g, "what is your name ?"],
+  [/\bwhere toilet\b|\btoilet where\b/g, "where is the toilet ?"],
+  [/\b(?:you|your) (?:good|ok|fine|alright)\b/g, "are you OK ?"],
+  [/\bhow (?:you|are you)\b|\byou how\b/g, "how are you ?"],
+  // statements
+  [/\b(?:me|i) (deaf|hearing|happy|sad|tired|hungry|thirsty|good|fine|ok)\b/g, "i am $1 ."],
+  [/\b(deaf|hearing) (?:me|i)\b/g, "i am $1 ."],
+  [/\b(?:me )?want water(?: please)?\b|\bwater (?:please|want)\b|\bplease water\b/g, "can i have some water, please ?"],
+  [/\b(?:help (?:me )?please|please help(?: me)?|help me)\b/g, "please help me ."],
+  [/\bthank you\b/g, ". thank you ."],
+  [/\bsorry\b/g, ". sorry ."],
+  [/\b(?:good )?morning\b/g, ". good morning ."],
+  [/^ ?(hello|hi)\b/g, "$1 ,"],
+  [/ (hello|hi)\b/g, " . $1 ,"],
+  [/^ ?(yes|no)\b/g, "$1 ,"],
+  [/\bmy (friend|family|mum|dad|brother|sister)\b/g, "my $1"],
+  [/\bme (friend|family|mum|dad|brother|sister)\b/g, "my $1"],
+  [/^ ?me\b/g, " i"],
+];
+
+function finishSentences(str) {
+  let t = (" " + str + " ").replace(/\s+/g, " ").trim();
+  t = t.replace(/\s*\.\s*/g, ". ").replace(/\s*\?\s*/g, "? ").replace(/\s*,\s*/g, ", ");
+  for (let i = 0; i < 3; i++) {
+    t = t.replace(/^[.,?]\s*/, "")                 // punctuation at the very start
+         .replace(/([.?])\s*[.,]\s*/g, "$1 ")      // ". ." or "? ,"
+         .replace(/,\s*([.?])/g, "$1")             // ", ."
+         .replace(/,\s*,/g, ",");
+  }
+  t = t.trim().replace(/,$/, "");
+  t = t.replace(/\bi\b/g, "I").replace(/\bok\b/g, "OK");
+  t = t.replace(/(^|[.?!]\s+)([a-z])/g, (m, a, b) => a + b.toUpperCase());
+  if (t && !/[.?!]$/.test(t)) t += ".";
+  return t;
+}
+
+// tokens: recognised words in order; fingerspelled names start with a capital letter.
+function tidyGloss(tokens) {
+  const removed = [];
+  const kept = [];
+  for (const tok of tokens) {
+    const l = tok.toLowerCase();
+    if (l === "rest" || !l.trim()) continue;
+    if (kept.length && kept[kept.length - 1].toLowerCase() === l) { removed.push(`${tok} (repeated)`); continue; }
+    kept.push(tok);
+  }
+  if (!kept.length) return { best: "", literal: "", removed };
+  const isName = w => /^[A-Z]/.test(w);
+  const literal = finishSentences(kept.map(w => isName(w) ? w : w.toLowerCase()).join(" "));
+
+  let s = " " + kept.map(w => isName(w) ? w : w.toLowerCase()).join(" ") + " ";
+  for (const [re, rep] of GRAMMAR_RULES) s = s.replace(re, rep);
+  // generic: a question word at the end of a clause moves to the front (BSL → English order)
+  s = s.split(/([.?])/).map(part => {
+    const m = part.match(new RegExp(`^\\s*(.+?)\\s+(${WH})\\s*$`));
+    if (!m) return part;
+    const single = !/\s/.test(m[1].trim()) && /^(what|where|who)$/.test(m[2]);
+    return single ? ` ${m[2]} is ${m[1]} ?` : ` ${m[2]} ${m[1]} ?`;
+  }).join("");
+  return { best: finishSentences(s), literal, removed };
+}
+
+
+// ---------- Translation box: signs → English ----------
+let chosenEnglish = null;        // a suggestion the user tapped
+let aiResult = null, aiFor = "";  // last AI answer and the signs it was for
+let aiTimer = null, aiBusy = false, aiLastCall = 0;
+
+const cleanTokens = () => transcript.filter(t => t && t.toLowerCase() !== "rest");
+const glossKey = () => cleanTokens().join(" ");
+
+function currentTranslation() {
+  const tokens = cleanTokens();
+  const rule = tidyGloss(tokens);
+  const useAi = aiResult && aiFor === glossKey() && aiResult.best;
+  const options = [];
+  const add = (text, src) => { text = (text || "").trim(); if (text && !options.some(o => o.text.toLowerCase() === text.toLowerCase())) options.push({ text, src }); };
+  if (useAi) { add(aiResult.best, "ai"); aiResult.alternatives.forEach(a => add(a, "ai")); }
+  add(rule.best, "basic");
+  add(rule.literal, "basic");
+  let main = options[0];
+  if (chosenEnglish && options.some(o => o.text === chosenEnglish)) main = options.find(o => o.text === chosenEnglish);
+  const removed = useAi && aiResult.removed.length ? aiResult.removed : rule.removed;
+  return { main, options, removed, tokens };
+}
+
+function englishText() {
+  const t = currentTranslation();
+  return [t.main?.text, spellWord].filter(Boolean).join(" ");
+}
+
+function renderCaption(tr) {
   const cap = $("caption");
-  const recent = transcript.slice(-6);
-  if (!$("showCaptions").checked || (!recent.length && !spellWord)) { cap.hidden = true; return; }
+  const text = tr.main ? tr.main.text : "";
+  if (!$("showCaptions").checked || (!text && !spellWord)) { cap.hidden = true; return; }
   cap.hidden = false;
   cap.innerHTML = "";
-  cap.append(document.createTextNode(recent.join(" ") + (recent.length && spellWord ? " " : "")));
+  const shown = text.length > 90 ? "…" + text.slice(-90) : text;
+  cap.append(document.createTextNode(shown + (shown && spellWord ? " " : "")));
   if (spellWord) { const s = document.createElement("span"); s.className = "spelling"; s.textContent = spellWord; cap.append(s); }
 }
 
 function renderTranscript() {
-  renderCaption();
+  const tr = currentTranslation();
+  renderCaption(tr);
   const el = $("transcript");
   el.innerHTML = "";
-  if (!transcript.length && !spellWord) { el.innerHTML = '<span class="empty">Signed words will appear here.</span>'; return; }
-  el.append(document.createTextNode(transcript.join(" ") + (transcript.length && spellWord ? " " : "")));
+  if (!tr.main && !spellWord) {
+    el.innerHTML = '<span class="empty">Signed words will appear here as English sentences.</span>';
+    $("glossLine").hidden = $("removedNote").hidden = $("altBox").hidden = $("engTag").hidden = true;
+    return;
+  }
+  if (tr.main) el.append(document.createTextNode(tr.main.text + (spellWord ? " " : "")));
   if (spellWord) { const s = document.createElement("span"); s.className = "spelling"; s.textContent = spellWord; el.append(s); }
+
+  const tag = $("engTag");
+  tag.hidden = !tr.main;
+  if (tr.main) { tag.textContent = tr.main.src === "ai" ? "AI" : "Basic"; tag.classList.toggle("ai", tr.main.src === "ai"); }
+
+  const gl = $("glossLine");
+  gl.hidden = false; gl.innerHTML = "";
+  const lbl = document.createElement("strong"); lbl.textContent = "Signs: "; gl.append(lbl);
+  gl.append(document.createTextNode(transcript.join(" ") + (spellWord ? " " : "")));
+  if (spellWord) { const s = document.createElement("span"); s.className = "spelling"; s.textContent = spellWord; gl.append(s); }
+
+  const rn = $("removedNote");
+  rn.hidden = !tr.removed.length;
+  rn.textContent = tr.removed.length ? "Left out: " + tr.removed.join(", ") : "";
+
+  const alts = tr.options.filter(o => o !== tr.main);
+  $("altBox").hidden = !alts.length;
+  const list = $("altList"); list.innerHTML = "";
+  for (const o of alts) {
+    const b = document.createElement("button");
+    b.className = "alt"; b.textContent = o.text; b.title = o.src === "ai" ? "AI suggestion" : "Built-in suggestion";
+    b.addEventListener("click", () => { chosenEnglish = o.text; renderTranscript(); });
+    list.appendChild(b);
+  }
+}
+
+// When the signs change: forget any tapped choice, refresh, and maybe ask the AI.
+function signsChanged() {
+  chosenEnglish = null;
+  renderTranscript();
+  scheduleAI();
+}
+
+// ---------- Optional AI (Google Gemini) ----------
+const AI_PROMPT = `You turn British Sign Language (BSL) gloss into natural British English.
+The input is the list of signs a sign-recognition system detected, in order. It may contain:
+- BSL word order (topic first, question words like what/where at the end, no "is/am/the/a")
+- recognition mistakes: repeated words or a word that clearly doesn't fit
+- fingerspelled names written with a capital letter (keep them exactly)
+Rules: keep the signer's meaning; do not add new facts; only drop a word if it is clearly a repeat or a mistake.
+Reply with JSON only: {"best": "one natural English sentence or two", "alternatives": ["up to 2 other phrasings"], "removed": ["each word you dropped, with a short reason in brackets"]}`;
+
+function setAiStatus(text, err = false) { const m = $("aiStatus"); m.textContent = text; m.classList.toggle("err", err); }
+function getAiKey() { try { return localStorage.getItem(AI_KEY) || ""; } catch (e) { return ""; } }
+
+function scheduleAI() {
+  if (!getAiKey() || !$("aiAuto").checked || !cleanTokens().length) return;
+  clearTimeout(aiTimer);
+  const wait = Math.max(1200, 6500 - (Date.now() - aiLastCall)); // stay under the free-tier rate limit
+  aiTimer = setTimeout(runAI, wait);
+}
+
+async function runAI(force = false) {
+  const key = getAiKey();
+  const gloss = glossKey();
+  if (!key) { setAiStatus("Add a Gemini API key first.", true); return; }
+  if (!gloss) { setAiStatus("Sign something first.", true); return; }
+  if (!force && aiResult && aiFor === gloss) return;
+  if (aiBusy) { scheduleAI(); return; }
+  aiBusy = true; aiLastCall = Date.now();
+  setAiStatus("Asking AI…");
+  try {
+    const model = ($("aiModel").value || "gemini-2.5-flash").trim();
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: AI_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: gloss }] }],
+        generationConfig: { temperature: 0.3, responseMimeType: "application/json" }
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data?.error?.message || `HTTP ${res.status}`;
+      if (res.status === 429) throw new Error("Free limit reached. Wait a minute and try again.");
+      if (res.status === 404) throw new Error(`Model "${model}" not found. Try another model name (see aistudio.google.com).`);
+      if (/API key not valid|API_KEY_INVALID/i.test(msg)) throw new Error("That API key didn't work. Check it was copied fully.");
+      throw new Error(msg);
+    }
+    const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("");
+    const j = JSON.parse(text.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, ""));
+    if (glossKey() === gloss) {
+      aiResult = {
+        best: String(j.best || "").trim(),
+        alternatives: (Array.isArray(j.alternatives) ? j.alternatives : []).map(String).slice(0, 2),
+        removed: (Array.isArray(j.removed) ? j.removed : []).map(String)
+      };
+      aiFor = gloss;
+      setAiStatus("AI suggestion ready.");
+      renderTranscript();
+    }
+  } catch (e) {
+    setAiStatus("AI didn't work: " + (e.message || e) + " (Built-in rules are still used.)", true);
+  } finally {
+    aiBusy = false;
+  }
 }
 
 // Speak one new word straight away (queued, so words aren't cut off).
@@ -770,18 +1009,21 @@ function sayNow(text) {
 }
 
 function savePrefs() {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked })); } catch (e) {}
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked, aiAuto: $("aiAuto").checked, aiModel: $("aiModel").value.trim() })); } catch (e) {}
 }
 function loadPrefs() {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
     if (typeof p.autoSpeak === "boolean") $("autoSpeak").checked = p.autoSpeak;
     if (typeof p.showCaptions === "boolean") $("showCaptions").checked = p.showCaptions;
+    if (typeof p.aiAuto === "boolean") $("aiAuto").checked = p.aiAuto;
+    if (p.aiModel) $("aiModel").value = p.aiModel;
+    if (getAiKey()) $("aiKey").placeholder = "Key saved in this browser";
   } catch (e) {}
 }
 
 function speak() {
-  const text = [...transcript, spellWord].filter(Boolean).join(" ");
+  const text = englishText();
   if (!text || !("speechSynthesis" in window)) return;
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "en-GB";
@@ -968,10 +1210,26 @@ $("autoSpeak").addEventListener("change", () => { savePrefs(); if (!$("autoSpeak
 $("showCaptions").addEventListener("change", () => { savePrefs(); renderCaption(); });
 $("spaceBtn").addEventListener("click", endSpellWord);
 $("undoBtn").addEventListener("click", () => {
-  if (spellWord) spellWord = spellWord.slice(0, -1); else transcript.pop();
-  renderTranscript();
+  if (spellWord) { spellWord = spellWord.slice(0, -1); renderTranscript(); }
+  else { transcript.pop(); signsChanged(); }
 });
-$("clearBtn").addEventListener("click", () => { transcript.length = 0; spellWord = ""; lastEmitted = null; renderTranscript(); });
+$("clearBtn").addEventListener("click", () => { transcript.length = 0; spellWord = ""; lastEmitted = null; aiResult = null; signsChanged(); });
+$("aiSaveBtn").addEventListener("click", () => {
+  const k = $("aiKey").value.trim();
+  if (!k) { setAiStatus("Paste a key first.", true); return; }
+  try { localStorage.setItem(AI_KEY, k); } catch (e) {}
+  $("aiKey").value = ""; $("aiKey").placeholder = "Key saved in this browser";
+  setAiStatus("Key saved. Sign something, or press Improve now.");
+  if (cleanTokens().length) runAI(true);
+});
+$("aiNowBtn").addEventListener("click", () => runAI(true));
+$("aiForgetBtn").addEventListener("click", () => {
+  try { localStorage.removeItem(AI_KEY); } catch (e) {}
+  aiResult = null; $("aiKey").placeholder = "Paste key here";
+  setAiStatus("Key removed from this browser."); renderTranscript();
+});
+$("aiAuto").addEventListener("change", savePrefs);
+$("aiModel").addEventListener("change", savePrefs);
 $("thr").addEventListener("input", e => $("thrVal").textContent = e.target.value + "%");
 $("exportBtn").addEventListener("click", download);
 $("importBtn").addEventListener("click", () => $("importFile").click());
