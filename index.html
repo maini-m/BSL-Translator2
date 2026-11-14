@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BSL Translator</title>
+<style>
+  :root{
+    --bg:#f6f4ef; --card:#ffffff; --ink:#14181f; --muted:#5b6472; --line:#e3dfd6;
+    --accent:#0b6e69; --accent-soft:#e1f1ef; --rec:#c8322b; --left:#f59e0b; --right:#14b8a6;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);line-height:1.45}
+  header{display:flex;align-items:baseline;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line);background:var(--card)}
+  header h1{margin:0;font-size:1.35rem;letter-spacing:-.01em}
+  header p{margin:0;color:var(--muted);font-size:.95rem}
+  .layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,1fr);gap:22px;padding:22px 28px;max-width:1400px;margin:0 auto}
+  @media (max-width:900px){.layout{grid-template-columns:1fr;padding:16px}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
+  .video-wrap{position:relative;border-radius:var(--radius);overflow:hidden;background:#0d1117;min-height:240px}
+  video,#overlay{display:block;width:100%;height:auto;transform:scaleX(-1)}
+  #overlay{position:absolute;inset:0;height:100%;pointer-events:none}
+  .cam-prompt{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:#e6edf3;text-align:center;padding:20px;background:#0d1117}
+  .cam-prompt p{margin:0;max-width:420px;color:#aab4c0;font-size:.95rem}
+  .hud{position:absolute;top:12px;left:12px;display:flex;gap:8px}
+  .badge{background:rgba(13,17,23,.75);color:#fff;padding:5px 11px;border-radius:999px;font-size:.85rem;font-weight:600}
+  .badge.rec{background:var(--rec)}
+  .countdown{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:7rem;font-weight:800;color:#fff;text-shadow:0 4px 30px rgba(0,0,0,.6);background:rgba(0,0,0,.25)}
+  .prediction{margin-top:16px;padding:18px 22px}
+  .pred-label{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+  .pred-word{font-size:3.2rem;font-weight:800;letter-spacing:-.02em;min-height:1.2em;text-transform:capitalize}
+  .pred-word.dim{color:#b5b0a5}
+  .conf{height:8px;background:#eeeae2;border-radius:999px;overflow:hidden;margin:6px 0 8px}
+  .conf div{height:100%;width:0;background:var(--accent);transition:width .15s}
+  .pred-meta{color:var(--muted);font-size:.9rem}
+  .panel{padding:0;display:flex;flex-direction:column;align-self:start}
+  .tabs{display:flex;border-bottom:1px solid var(--line)}
+  .tabs button{flex:1;background:none;border:0;padding:14px;font:inherit;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent}
+  .tabs button.active{color:var(--ink);border-bottom-color:var(--accent)}
+  .tab{padding:18px 20px}
+  h2{font-size:1rem;margin:0 0 10px}
+  .transcript{min-height:120px;border:1px solid var(--line);border-radius:10px;padding:14px;font-size:1.5rem;font-weight:600;background:#fbfaf7;word-wrap:break-word}
+  .transcript .empty{color:#b5b0a5;font-weight:400;font-size:1rem}
+  .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+  button.btn{font:inherit;font-weight:600;border-radius:10px;border:1px solid var(--line);background:#fff;padding:9px 14px;cursor:pointer;color:var(--ink)}
+  button.btn:hover{border-color:#c9c3b6}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#095c58}
+  button.record{background:var(--rec);border-color:var(--rec);color:#fff}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  label.small{font-size:.85rem;color:var(--muted)}
+  input[type=text]{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);width:100%}
+  input[type=range]{width:100%}
+  .hint{font-size:.85rem;color:var(--muted);margin:8px 0 0}
+  .msg{font-size:.9rem;margin-top:8px;min-height:1.3em;color:var(--accent);font-weight:600}
+  .msg.err{color:var(--rec)}
+  .words{list-style:none;padding:0;margin:10px 0 0;max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+  .words li{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line)}
+  .words li:last-child{border-bottom:0}
+  .words .name{flex:1;font-weight:600;text-transform:capitalize}
+  .words .count{font-variant-numeric:tabular-nums;color:var(--muted);font-size:.9rem}
+  .words .bar{width:60px;height:6px;background:#eeeae2;border-radius:999px;overflow:hidden}
+  .words .bar div{height:100%;background:var(--accent)}
+  .words button{font-size:.8rem;padding:4px 8px}
+  .words .empty{color:var(--muted);justify-content:center}
+  hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+  .legend{display:flex;gap:14px;font-size:.85rem;color:var(--muted);margin-top:10px}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header>
+  <h1>BSL Translator</h1>
+  <p>British Sign Language → English, live from your webcam</p>
+</header>
+
+<main class="layout">
+  <section>
+    <div class="video-wrap">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="countdown" class="countdown" hidden></div>
+      <div class="hud">
+        <span id="handsBadge" class="badge">No hands</span>
+        <span id="recBadge" class="badge rec" hidden>● Recording</span>
+      </div>
+      <div id="camPrompt" class="cam-prompt">
+        <button id="startBtn" class="btn primary" disabled>Loading hand tracker…</button>
+        <p id="camMsg">Your video stays on this device. Nothing is uploaded.</p>
+      </div>
+    </div>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--left)"></span>Hand 1</span>
+      <span><span class="dot" style="background:var(--right)"></span>Hand 2</span>
+      <span>BSL uses both hands, so keep both in view.</span>
+    </div>
+
+    <div class="card prediction" aria-live="polite">
+      <div class="pred-label">Detected sign</div>
+      <div id="predWord" class="pred-word dim">—</div>
+      <div class="conf"><div id="confBar"></div></div>
+      <div id="predMeta" class="pred-meta">Train at least two words to start translating.</div>
+    </div>
+  </section>
+
+  <aside class="card panel">
+    <div class="tabs" role="tablist">
+      <button id="tabBtnTranslate" class="active" data-tab="translate" role="tab">Translate</button>
+      <button id="tabBtnTrain" data-tab="train" role="tab">Train</button>
+    </div>
+
+    <div id="tab-translate" class="tab">
+      <h2>Translation</h2>
+      <div id="transcript" class="transcript"><span class="empty">Signed words will appear here.</span></div>
+      <div class="row">
+        <button id="speakBtn" class="btn primary">🔊 Speak</button>
+        <button id="undoBtn" class="btn">Undo last</button>
+        <button id="clearBtn" class="btn">Clear</button>
+      </div>
+      <hr>
+      <label class="small" for="thr">Confidence needed: <strong id="thrVal">60%</strong></label>
+      <input id="thr" type="range" min="30" max="95" value="60">
+      <p class="hint">Raise it if wrong words keep appearing. Lower it if correct signs are being missed.</p>
+    </div>
+
+    <div id="tab-train" class="tab" hidden>
+      <h2>Record a sign</h2>
+      <label class="small" for="wordInput">English word for the sign</label>
+      <input id="wordInput" type="text" list="suggestions" placeholder="e.g. hello" autocomplete="off">
+      <datalist id="suggestions">
+        <option value="hello"><option value="thank you"><option value="please"><option value="yes"><option value="no">
+        <option value="help"><option value="sorry"><option value="name"><option value="water"><option value="toilet">
+        <option value="good"><option value="friend"><option value="family"><option value="deaf"><option value="rest">
+      </datalist>
+      <div class="row">
+        <button id="recBtn" class="btn record" disabled>● Record 1</button>
+        <button id="burstBtn" class="btn" disabled>Record 5 in a row</button>
+      </div>
+      <p class="hint">After a 3-second countdown, sign once (about 1.5 seconds). Press <strong>Space</strong> to record. Aim for <strong>15+ samples per word</strong> from different people.</p>
+      <p class="hint">Also record a word called <strong>rest</strong>: hands visible but not signing. It's never added to the translation, and it stops idle hands being read as a sign.</p>
+      <div id="trainMsg" class="msg"></div>
+
+      <hr>
+      <h2>Your signs</h2>
+      <ul id="wordList" class="words"></ul>
+      <div class="row">
+        <button id="exportBtn" class="btn">Export samples</button>
+        <button id="importBtn" class="btn">Import samples</button>
+        <input id="importFile" type="file" accept=".json,application/json" hidden>
+      </div>
+      <p class="hint">Export and share the file so teammates can import each other's recordings. You can also import BSLDict data made with the Colab script.</p>
+      <div id="storeMsg" class="msg err"></div>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+// ---------- Settings ----------
+const T = 16;               // frames per sign after resampling
+const WINDOW_MS = 1600;     // live recognition window
+const REC_MS = 1600;        // length of one recorded sample
+const CLASSIFY_EVERY = 200; // ms between predictions
+const STABLE = 3;           // same prediction N times in a row before adding to transcript
+const STORE_KEY = "bsl-translator-samples-v1";
+const SLOT_COLORS = ["#f59e0b", "#14b8a6"];
+
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+
+let landmarker = null, drawer = null, lastVideoTime = -1, cameraOn = false;
+let buffer = [];          // {t, hands:[slot0, slot1]}
+let recording = null;     // {label, frames, until}
+let burstLeft = 0, busy = false;
+let samples = [];         // {label, frames, feat, source}
+let lastClassify = 0, streakLabel = null, streak = 0, lastEmitted = null, lastEmitTime = 0;
+const transcript = [];
+
+// ---------- Hand tracker ----------
+async function initTracker() {
+  const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const make = delegate => HandLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate
+    },
+    runningMode: "VIDEO",
+    numHands: 2,
+    minHandDetectionConfidence: 0.5,
+    minHandPresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+  try { landmarker = await make("GPU"); } catch (e) { landmarker = await make("CPU"); }
+  drawer = new DrawingUtils(ctx);
+}
+
+async function startCamera() {
+  if (!window.isSecureContext) {
+    $("camMsg").textContent = "Camera needs a secure page. Open this via http://localhost (e.g. a live server) or https, not by double-clicking the file.";
+    return;
+  }
+  try {
+    $("startBtn").disabled = true;
+    $("startBtn").textContent = "Starting camera…";
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    $("camPrompt").hidden = true;
+    cameraOn = true;
+    $("recBtn").disabled = false;
+    $("burstBtn").disabled = false;
+    requestAnimationFrame(loop);
+  } catch (e) {
+    $("startBtn").disabled = false;
+    $("startBtn").textContent = "Try again";
+    $("camMsg").textContent = "Couldn't open the camera: " + (e.message || e.name) + ". Check browser permissions.";
+  }
+}
+
+// Put each detected hand into a fixed slot (0/1) using MediaPipe's handedness label.
+function toSlots(res, aspect) {
+  const slots = [null, null];
+  (res.landmarks || []).forEach((lms, i) => {
+    const name = res.handedness?.[i]?.[0]?.categoryName;
+    let idx = name === "Left" ? 0 : 1;
+    if (slots[idx]) idx = 1 - idx;
+    if (slots[idx]) return;
+    const flat = new Array(63);
+    for (let p = 0; p < 21; p++) {
+      flat[p * 3] = lms[p].x * aspect;   // make x and y the same scale
+      flat[p * 3 + 1] = lms[p].y;
+      flat[p * 3 + 2] = lms[p].z * aspect;
+    }
+    slots[idx] = flat;
+  });
+  return slots;
+}
+
+function draw(res) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  (res.landmarks || []).forEach((lms, i) => {
+    const name = res.handedness?.[i]?.[0]?.categoryName;
+    const color = SLOT_COLORS[name === "Left" ? 0 : 1];
+    drawer.drawConnectors(lms, HandLandmarker.HAND_CONNECTIONS, { color, lineWidth: 5 });
+    drawer.drawLandmarks(lms, { color: "#ffffff", fillColor: color, lineWidth: 1, radius: 4 });
+  });
+}
+
+function loop() {
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const now = performance.now();
+    const res = landmarker.detectForVideo(video, now);
+    const hands = toSlots(res, video.videoWidth / video.videoHeight);
+    draw(res);
+    const n = res.landmarks?.length || 0;
+    $("handsBadge").textContent = n === 0 ? "No hands" : n === 1 ? "1 hand" : "2 hands";
+
+    buffer.push({ t: now, hands });
+    while (buffer.length && now - buffer[0].t > WINDOW_MS) buffer.shift();
+
+    if (recording) {
+      recording.frames.push(hands);
+      if (now >= recording.until) finishRecording();
+    } else if (now - lastClassify > CLASSIFY_EVERY) {
+      lastClassify = now;
+      recognise(now);
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+// ---------- Features ----------
+const hasHand = f => f && (f[0] || f[1]);
+const round4 = arr => arr.map(v => Math.round(v * 10000) / 10000);
+
+// Trim frames with no hands at the ends, then resample to T frames.
+function prepare(frames) {
+  let a = 0, b = frames.length - 1;
+  while (a <= b && !hasHand(frames[a])) a++;
+  while (b >= a && !hasHand(frames[b])) b--;
+  const f = frames.slice(a, b + 1);
+  if (f.filter(hasHand).length < 3) return null;
+  const out = [];
+  for (let i = 0; i < T; i++) {
+    const fr = f[Math.round(i * (f.length - 1) / (T - 1))];
+    out.push([fr && fr[0] ? round4(fr[0]) : null, fr && fr[1] ? round4(fr[1]) : null]);
+  }
+  return out;
+}
+
+function handSize(h) { return Math.hypot(h[27] - h[0], h[28] - h[1]); } // wrist → middle-finger knuckle
+
+// Hand shape relative to its wrist + hand movement relative to the sign's centre.
+function featurize(frames) {
+  let cx = 0, cy = 0, sc = 0, n = 0;
+  for (const fr of frames) for (const h of fr) if (h) { cx += h[0]; cy += h[1]; sc += handSize(h); n++; }
+  cx /= n; cy /= n; sc = (sc / n) || 1;
+  const v = new Float32Array(T * 2 * 66);
+  let k = 0;
+  for (const fr of frames) {
+    for (let s = 0; s < 2; s++) {
+      const h = fr[s];
+      if (!h) { k += 66; continue; }
+      v[k++] = 3;                               // "hand present" flag
+      v[k++] = 2.5 * (h[0] - cx) / sc;          // movement / position
+      v[k++] = 2.5 * (h[1] - cy) / sc;
+      const hs = handSize(h) || 1;
+      for (let p = 0; p < 21; p++) {            // handshape
+        v[k++] = (h[p * 3] - h[0]) / hs;
+        v[k++] = (h[p * 3 + 1] - h[1]) / hs;
+        v[k++] = (h[p * 3 + 2] - h[2]) / hs;
+      }
+    }
+  }
+  return v;
+}
+
+function dist(a, b) { let s = 0; for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// k-nearest-neighbours: compare against every recorded sample.
+function classify(feat) {
+  const ds = samples.map(s => ({ label: s.label, d: dist(feat, s.feat) })).sort((x, y) => x.d - y.d);
+  const k = Math.min(5, ds.length);
+  const votes = {}; let total = 0;
+  for (let i = 0; i < k; i++) { const w = 1 / (ds[i].d + 1e-6); votes[ds[i].label] = (votes[ds[i].label] || 0) + w; total += w; }
+  let best = null, bw = 0;
+  for (const [l, w] of Object.entries(votes)) if (w > bw) { best = l; bw = w; }
+  return { label: best, conf: bw / total };
+}
+
+const labelCount = () => new Set(samples.map(s => s.label)).size;
+
+// ---------- Live recognition ----------
+function recognise(now) {
+  if (labelCount() < 2) { showPred(null, 0, "Train at least two words to start translating."); return; }
+  const frames = buffer.map(b => b.hands);
+  const handFrac = frames.filter(hasHand).length / Math.max(1, frames.length);
+  if (handFrac < 0.4) {
+    streak = 0; streakLabel = null; lastEmitted = null;
+    showPred(null, 0, "Waiting for hands…");
+    return;
+  }
+  const prep = prepare(frames);
+  if (!prep) return;
+  const r = classify(featurize(prep));
+  const thr = +$("thr").value / 100;
+  showPred(r.label, r.conf, r.label === "rest" ? "Resting" : (r.conf >= thr ? "Confident" : "Not sure yet"));
+
+  if (r.label === streakLabel) streak++; else { streakLabel = r.label; streak = 1; }
+  const translating = !$("tab-translate").hidden;
+  if (translating && streak >= STABLE && r.conf >= thr && r.label !== "rest" &&
+      now - lastEmitTime > 1000 && (r.label !== lastEmitted || now - lastEmitTime > 3000)) {
+    transcript.push(r.label);
+    lastEmitted = r.label; lastEmitTime = now;
+    renderTranscript();
+  }
+}
+
+function showPred(label, conf, meta) {
+  const el = $("predWord");
+  el.textContent = label && label !== "rest" ? label : "—";
+  el.classList.toggle("dim", !label || label === "rest");
+  $("confBar").style.width = Math.round(conf * 100) + "%";
+  $("predMeta").textContent = label ? `${meta} · ${Math.round(conf * 100)}% confidence` : meta;
+}
+
+function renderTranscript() {
+  const el = $("transcript");
+  el.innerHTML = "";
+  if (!transcript.length) { el.innerHTML = '<span class="empty">Signed words will appear here.</span>'; return; }
+  el.textContent = transcript.join(" ");
+}
+
+function speak() {
+  if (!transcript.length || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(transcript.join(" "));
+  u.lang = "en-GB";
+  const v = speechSynthesis.getVoices().find(v => v.lang === "en-GB");
+  if (v) u.voice = v;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+// ---------- Recording ----------
+function setTrainMsg(text, err = false) { const m = $("trainMsg"); m.textContent = text; m.classList.toggle("err", err); }
+
+function startRecording() {
+  if (!cameraOn || busy) return;
+  const label = $("wordInput").value.trim().toLowerCase();
+  if (!label) { setTrainMsg("Type the English word first.", true); $("wordInput").focus(); return; }
+  busy = true;
+  $("recBtn").disabled = $("burstBtn").disabled = true;
+  const cd = $("countdown");
+  let n = 3;
+  cd.hidden = false; cd.textContent = n;
+  const tick = () => {
+    n--;
+    if (n > 0) { cd.textContent = n; setTimeout(tick, 700); return; }
+    cd.hidden = true;
+    $("recBadge").hidden = false;
+    recording = { label, frames: [], until: performance.now() + REC_MS };
+  };
+  setTimeout(tick, 700);
+}
+
+function finishRecording() {
+  const r = recording; recording = null;
+  $("recBadge").hidden = true;
+  const prep = prepare(r.frames);
+  if (!prep) {
+    setTrainMsg("No hands were seen. Move back so both hands are in view, then try again.", true);
+    burstLeft = 0;
+  } else {
+    samples.push({ label: r.label, frames: prep, feat: featurize(prep), source: "webcam" });
+    saveStore(); renderWords();
+    const count = samples.filter(s => s.label === r.label).length;
+    setTrainMsg(`Saved “${r.label}” (${count} sample${count === 1 ? "" : "s"}).`);
+  }
+  busy = false;
+  $("recBtn").disabled = $("burstBtn").disabled = false;
+  if (burstLeft > 0) { burstLeft--; setTimeout(startRecording, 600); }
+}
+
+function renderWords() {
+  const ul = $("wordList");
+  const counts = {};
+  samples.forEach(s => counts[s.label] = (counts[s.label] || 0) + 1);
+  const entries = Object.entries(counts).sort((a, b) => a[0].localeCompare(b[0]));
+  ul.innerHTML = "";
+  if (!entries.length) { ul.innerHTML = '<li class="empty">No signs recorded yet.</li>'; return; }
+  for (const [label, c] of entries) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="name"></span><span class="bar"><div style="width:${Math.min(100, c / 15 * 100)}%"></div></span><span class="count">${c}</span><button class="btn">Delete</button>`;
+    li.querySelector(".name").textContent = label;
+    const del = li.querySelector("button");
+    del.addEventListener("click", () => {
+      if (del.dataset.armed) {
+        samples = samples.filter(s => s.label !== label);
+        saveStore(); renderWords();
+      } else {
+        del.dataset.armed = "1"; del.textContent = "Sure?";
+        setTimeout(() => { delete del.dataset.armed; del.textContent = "Delete"; }, 2500);
+      }
+    });
+    ul.appendChild(li);
+  }
+}
+
+// ---------- Save / load / share ----------
+function exportData() {
+  return { format: "bsl-landmarks-v1", samples: samples.map(s => ({ label: s.label, source: s.source || "webcam", frames: s.frames })) };
+}
+
+function addSamples(list) {
+  let added = 0, skipped = 0;
+  for (const s of list || []) {
+    const label = String(s.label || "").trim().toLowerCase();
+    const prep = label && Array.isArray(s.frames) ? prepare(s.frames) : null;
+    if (!prep) { skipped++; continue; }
+    samples.push({ label, frames: prep, feat: featurize(prep), source: s.source || "import" });
+    added++;
+  }
+  return { added, skipped };
+}
+
+function saveStore() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(exportData())); $("storeMsg").textContent = ""; }
+  catch (e) { $("storeMsg").textContent = "Browser storage is full. Click Export to keep your samples safe."; }
+}
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) addSamples(JSON.parse(raw).samples);
+  } catch (e) { /* storage unavailable: start empty */ }
+}
+
+function download() {
+  const blob = new Blob([JSON.stringify(exportData())], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "bsl-samples.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function importFile(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    const { added, skipped } = addSamples(data.samples);
+    saveStore(); renderWords();
+    setTrainMsg(`Imported ${added} sample${added === 1 ? "" : "s"}${skipped ? ` (${skipped} skipped: no hands found)` : ""}.`);
+  } catch (e) {
+    setTrainMsg("That file isn't a valid samples file.", true);
+  }
+}
+
+// ---------- UI wiring ----------
+function showTab(name) {
+  $("tab-translate").hidden = name !== "translate";
+  $("tab-train").hidden = name !== "train";
+  $("tabBtnTranslate").classList.toggle("active", name === "translate");
+  $("tabBtnTrain").classList.toggle("active", name === "train");
+}
+$("tabBtnTranslate").addEventListener("click", () => showTab("translate"));
+$("tabBtnTrain").addEventListener("click", () => showTab("train"));
+$("startBtn").addEventListener("click", startCamera);
+$("recBtn").addEventListener("click", () => { burstLeft = 0; startRecording(); });
+$("burstBtn").addEventListener("click", () => { burstLeft = 4; startRecording(); });
+$("speakBtn").addEventListener("click", speak);
+$("undoBtn").addEventListener("click", () => { transcript.pop(); renderTranscript(); });
+$("clearBtn").addEventListener("click", () => { transcript.length = 0; lastEmitted = null; renderTranscript(); });
+$("thr").addEventListener("input", e => $("thrVal").textContent = e.target.value + "%");
+$("exportBtn").addEventListener("click", download);
+$("importBtn").addEventListener("click", () => $("importFile").click());
+$("importFile").addEventListener("change", e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ""; });
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !$("tab-train").hidden && document.activeElement !== $("wordInput")) {
+    e.preventDefault(); burstLeft = 0; startRecording();
+  }
+});
+$("wordInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("wordInput").blur(); startRecording(); } });
+
+loadStore();
+renderWords();
+renderTranscript();
+initTracker()
+  .then(() => { $("startBtn").disabled = false; $("startBtn").textContent = "Start camera"; })
+  .catch(e => { $("startBtn").textContent = "Hand tracker failed to load"; $("camMsg").textContent = "Check your internet connection and reload. (" + (e.message || e) + ")"; });
+</script>
+</body>
+</html>
