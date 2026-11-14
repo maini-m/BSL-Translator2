@@ -172,14 +172,26 @@
 
       <!-- Fingerspelling mode: test the trained model on new people -->
       <div id="trainSpell" hidden>
-        <h2>Test the alphabet model on your hands</h2>
-        <p class="hint" style="margin-top:0">The model learned from someone else's hands. Record yourselves signing letters to measure how well it works for <strong>new people</strong>. These are the honest numbers to report in your write-up.</p>
+        <h2>Teach it your hands</h2>
+        <p class="hint" style="margin-top:0">The built-in model learned from someone else's hands. Record a few examples of letters it gets wrong, and it will use them. This also adds <strong>C, H, J and Y</strong>, which the dataset doesn't include.</p>
         <label class="small" for="letterSel" style="display:block;margin-top:12px">Letter you will sign</label>
         <select id="letterSel"></select>
         <div class="row">
-          <button id="spellRecBtn" class="btn record" disabled>● Record 2 seconds</button>
+          <button id="teachBtn" class="btn record" disabled>● Teach this letter (2 s)</button>
+          <button id="spellRecBtn" class="btn" disabled>Record a test (2 s)</button>
         </div>
         <div id="spellMsg" class="msg"></div>
+        <p class="hint">Aim for <strong>3 teaching recordings per problem letter</strong>; move your hands slightly between them. For H and J, hold the end position.</p>
+        <ul id="taughtList" class="words"></ul>
+        <div class="row">
+          <button id="teachExportBtn" class="btn">Export taught letters</button>
+          <button id="teachImportBtn" class="btn">Import</button>
+          <input id="teachImportFile" type="file" accept=".csv,text/csv" hidden>
+          <button id="teachClearBtn" class="btn">Clear taught</button>
+        </div>
+        <hr>
+        <h2>Test results</h2>
+        <p class="hint" style="margin-top:0">For an honest score, the person recording tests should <strong>not</strong> be the person who taught the letters. Report both numbers in the write-up: with and without teaching.</p>
         <div class="score">
           <div><div class="big" id="ownAcc">–</div><div class="small">accuracy on your recordings</div></div>
           <div><div class="big" id="ownN">0</div><div class="small">frames recorded</div></div>
@@ -208,6 +220,9 @@ const SPELL_STABLE = 10;    // letters: same letter for N frames (~1/3 s) before
 const SPELL_REC_MS = 2000;  // length of one test-letter recording
 const STORE_KEY = "bsl-translator-samples-v1";
 const OWN_KEY = "bsl-own-letters-v1";
+const TAUGHT_KEY = "bsl-taught-letters-v1";
+const EXTRA_LETTERS = ["C", "H", "J", "Y"]; // not in the Kaggle dataset: only learnable from your own examples
+const SIGMA = 0.5, TAU = 0.9, KNN = 7;      // personal matching: closeness scale, "not close enough" distance, neighbours
 const SLOT_COLORS = ["#f59e0b", "#14b8a6"];
 
 const $ = id => document.getElementById(id);
@@ -227,7 +242,9 @@ let spellWord = "";
 let spellModel = null;
 let probHist = [], spellStable = null, spellStableN = 0, spellLastEmit = null, spellLastEmitT = 0, noHandsSince = null;
 let spellRec = null;      // {label, rows, until}
-let ownRows = [];         // {label, raw, pred}
+let ownRows = [];         // test rows {label, raw, pred}
+let personal = [];        // taught rows {label, raw, feat}
+let allLetters = [], letterIdx = {};
 
 // ---------- Hand tracker ----------
 async function initTracker() {
@@ -263,7 +280,7 @@ async function startCamera() {
     $("camPrompt").hidden = true;
     cameraOn = true;
     $("recBtn").disabled = $("burstBtn").disabled = false;
-    $("spellRecBtn").disabled = !spellModel;
+    $("spellRecBtn").disabled = $("teachBtn").disabled = !spellModel;
     requestAnimationFrame(loop);
   } catch (e) {
     $("startBtn").disabled = false;
@@ -385,7 +402,29 @@ function mlp(x) {
 }
 
 function argmax(p) { let bi = 0; for (let i = 1; i < p.length; i++) if (p[i] > p[bi]) bi = i; return bi; }
-const predictLetter = raw => spellModel.classes[argmax(mlp(spellFeatures(raw)))];
+
+function featDist(a, b) { let s = 0; for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+// Combine the trained model with the letters you taught it.
+// If your sign is close to one of your own examples, your examples decide.
+// If it isn't close to any of them, the trained model decides.
+function spellProbs(raw) {
+  const f = spellFeatures(raw);
+  const out = new Float64Array(allLetters.length);
+  let none = 1;
+  if (personal.length) {
+    const near = personal.map(p => ({ l: p.label, d: featDist(f, p.feat) })).sort((a, b) => a.d - b.d).slice(0, KNN);
+    const w0 = Math.exp(-(TAU * TAU) / (SIGMA * SIGMA));
+    let tot = w0;
+    const w = near.map(({ l, d }) => { const v = Math.exp(-(d * d) / (SIGMA * SIGMA)); tot += v; return [l, v]; });
+    for (const [l, v] of w) out[letterIdx[l]] += v / tot;
+    none = w0 / tot;
+  }
+  const pm = mlp(f);
+  spellModel.classes.forEach((c, i) => out[letterIdx[c]] += none * pm[i]);
+  return out;
+}
+const predictLetter = raw => allLetters[argmax(spellProbs(raw))];
 
 function spellStep(res, aspect, now, n) {
   const raw = spellRaw(res, aspect);
@@ -402,11 +441,11 @@ function spellStep(res, aspect, now, n) {
     return;
   }
   noHandsSince = null;
-  probHist.push(mlp(spellFeatures(raw)));
+  probHist.push(spellProbs(raw));
   if (probHist.length > 6) probHist.shift();
-  const avg = new Float64Array(spellModel.classes.length);
+  const avg = new Float64Array(allLetters.length);
   for (const q of probHist) for (let i = 0; i < q.length; i++) avg[i] += q[i] / probHist.length;
-  const bi = argmax(avg), letter = spellModel.classes[bi], conf = avg[bi];
+  const bi = argmax(avg), letter = allLetters[bi], conf = avg[bi];
   const thr = +$("thr").value / 100;
   showPred(letter, conf, conf >= thr ? "Confident" : "Not sure yet");
 
@@ -430,30 +469,38 @@ function endSpellWord() {
 // ---- Own test recordings (honest evaluation on new signers) ----
 function setSpellMsg(text, err = false) { const m = $("spellMsg"); m.textContent = text; m.classList.toggle("err", err); }
 
-function startSpellRec() {
+function startSpellRec(purpose) {
   if (!cameraOn || busy || !spellModel) return;
   const label = $("letterSel").value;
-  busy = true; $("spellRecBtn").disabled = true;
+  busy = true; $("spellRecBtn").disabled = $("teachBtn").disabled = true;
   runCountdown(() => {
     $("recBadge").hidden = false;
-    spellRec = { label, rows: [], until: performance.now() + SPELL_REC_MS };
+    spellRec = { label, purpose, rows: [], until: performance.now() + SPELL_REC_MS };
   });
 }
 
 function finishSpellRec() {
   const r = spellRec; spellRec = null;
   $("recBadge").hidden = true;
-  busy = false; $("spellRecBtn").disabled = false;
+  busy = false; $("spellRecBtn").disabled = $("teachBtn").disabled = false;
   if (r.rows.length < 5) { setSpellMsg("Both hands weren't visible. Move back and try again.", true); return; }
+  if (r.purpose === "teach") {
+    const kept = r.rows.filter((_, i) => i % 2 === 0).map(raw => raw.map(v => Math.round(v * 1e6) / 1e6));
+    for (const raw of kept) personal.push({ label: r.label, raw, feat: spellFeatures(raw) });
+    saveTaught(); renderTaught(); rescoreOwn();
+    setSpellMsg(`Taught “${r.label}” (${kept.length} frames). Now try it in the Translate tab.`);
+    return;
+  }
   let right = 0;
-  for (const raw of r.rows) {
+  for (const raw of r.rows.filter((_, i) => i % 2 === 0)) {
     const rr = raw.map(v => Math.round(v * 1e6) / 1e6);
     const pred = predictLetter(rr);
     if (pred === r.label) right++;
     ownRows.push({ label: r.label, raw: rr, pred });
   }
   saveOwn(); renderOwn();
-  setSpellMsg(`Saved ${r.rows.length} frames of “${r.label}”: ${Math.round(100 * right / r.rows.length)}% recognised correctly.`);
+  const n = Math.ceil(r.rows.length / 2);
+  setSpellMsg(`Test of “${r.label}”: ${Math.round(100 * right / n)}% of ${n} frames recognised correctly.`);
 }
 
 function renderOwn() {
@@ -465,7 +512,7 @@ function renderOwn() {
   $("ownAcc").textContent = Math.round(100 * right / ownRows.length) + "%";
   const by = {};
   for (const r of ownRows) (by[r.label] ||= []).push(r);
-  for (const L of spellModel.classes) {
+  for (const L of allLetters) {
     const rows = by[L];
     if (!rows) continue;
     const ok = rows.filter(r => r.pred === L).length, acc = ok / rows.length;
@@ -480,25 +527,81 @@ function renderOwn() {
   }
 }
 
+function rescoreOwn() { for (const r of ownRows) r.pred = predictLetter(r.raw); renderOwn(); }
+
+function renderTaught() {
+  const ul = $("taughtList");
+  ul.innerHTML = "";
+  const counts = {};
+  personal.forEach(p => counts[p.label] = (counts[p.label] || 0) + 1);
+  const letters = allLetters.filter(L => counts[L]);
+  if (!letters.length) { ul.innerHTML = '<li class="empty">No letters taught yet: using the built-in model only.</li>'; return; }
+  for (const L of letters) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="name"></span><span class="bar"><div style="width:${Math.min(100, counts[L] / 90 * 100)}%"></div></span><span class="count"></span><button class="btn">Delete</button>`;
+    li.querySelector(".name").textContent = L + (EXTRA_LETTERS.includes(L) ? "  (new letter)" : "");
+    li.querySelector(".count").textContent = counts[L] + " frames";
+    const del = li.querySelector("button");
+    del.addEventListener("click", () => {
+      if (del.dataset.armed) { personal = personal.filter(p => p.label !== L); saveTaught(); renderTaught(); rescoreOwn(); }
+      else { del.dataset.armed = "1"; del.textContent = "Sure?"; setTimeout(() => { delete del.dataset.armed; del.textContent = "Delete"; }, 2500); }
+    });
+    ul.appendChild(li);
+  }
+}
+
+function saveTaught() {
+  try { localStorage.setItem(TAUGHT_KEY, JSON.stringify(personal.map(p => ({ label: p.label, raw: p.raw })))); }
+  catch (e) { setSpellMsg("Browser storage is full. Export your taught letters to keep them.", true); }
+}
+function loadTaught() {
+  try {
+    const d = JSON.parse(localStorage.getItem(TAUGHT_KEY) || "[]");
+    personal = d.filter(p => p.label in letterIdx).map(p => ({ label: p.label, raw: p.raw, feat: spellFeatures(p.raw) }));
+  } catch (e) { personal = []; }
+}
+
+function downloadCsv(rows, name) {
+  const csv = rows.map(r => r.raw.join(",") + "," + datasetLabel(r.label)).join("\n") + "\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+async function importTaught(file) {
+  try {
+    const lines = (await file.text()).trim().split(/\r?\n/);
+    let added = 0;
+    for (const line of lines) {
+      const parts = line.split(",");
+      if (parts.length !== 127) continue;
+      const raw = parts.slice(0, 126).map(Number);
+      const label = parts[126].split(" - ")[1]?.trim().toUpperCase();
+      if (!label || !(label in letterIdx) || raw.some(isNaN)) continue;
+      personal.push({ label, raw, feat: spellFeatures(raw) });
+      added++;
+    }
+    saveTaught(); renderTaught(); rescoreOwn();
+    setSpellMsg(`Imported ${added} taught frames.`, added === 0);
+  } catch (e) { setSpellMsg("Couldn't read that file.", true); }
+}
+
 function saveOwn() {
   try { localStorage.setItem(OWN_KEY, JSON.stringify(ownRows.map(r => ({ label: r.label, raw: r.raw })))); } catch (e) {}
 }
 function loadOwn() {
   try {
     const d = JSON.parse(localStorage.getItem(OWN_KEY) || "[]");
-    ownRows = d.map(r => ({ label: r.label, raw: r.raw, pred: predictLetter(r.raw) }));
+    ownRows = d.filter(r => r.label in letterIdx).map(r => ({ label: r.label, raw: r.raw, pred: predictLetter(r.raw) }));
   } catch (e) { ownRows = []; }
 }
 
 const datasetLabel = L => L === "10" ? "Ten - 10" : `${L} - ${L.toLowerCase()}`;
 function exportOwnCsv() {
-  if (!ownRows.length) { setSpellMsg("Record some letters first.", true); return; }
-  const csv = ownRows.map(r => r.raw.join(",") + "," + datasetLabel(r.label)).join("\n") + "\n";
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  a.download = "my_test_letters.csv";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  if (!ownRows.length) { setSpellMsg("Record some test letters first.", true); return; }
+  downloadCsv(ownRows, "my_test_letters.csv");
 }
 
 async function loadSpellModel() {
@@ -506,9 +609,14 @@ async function loadSpellModel() {
     const r = await fetch("fingerspell_model.json");
     if (!r.ok) throw new Error("HTTP " + r.status);
     spellModel = await r.json();
-    $("letterSel").innerHTML = spellModel.classes.map(c => `<option value="${c}">${c}</option>`).join("");
+    allLetters = [...new Set([...spellModel.classes, ...EXTRA_LETTERS])]
+      .sort((a, b) => (a === "10") - (b === "10") || a.localeCompare(b));
+    letterIdx = Object.fromEntries(allLetters.map((c, i) => [c, i]));
+    $("letterSel").innerHTML = allLetters.map(c =>
+      `<option value="${c}">${c}${EXTRA_LETTERS.includes(c) ? " (teach first)" : ""}</option>`).join("");
+    loadTaught(); renderTaught();
     loadOwn(); renderOwn();
-    $("spellRecBtn").disabled = !cameraOn;
+    $("spellRecBtn").disabled = $("teachBtn").disabled = !cameraOn;
   } catch (e) {
     spellModel = null;
   }
@@ -783,7 +891,16 @@ $("tabBtnTrain").addEventListener("click", () => showTab("train"));
 $("startBtn").addEventListener("click", startCamera);
 $("recBtn").addEventListener("click", () => { burstLeft = 0; startRecording(); });
 $("burstBtn").addEventListener("click", () => { burstLeft = 4; startRecording(); });
-$("spellRecBtn").addEventListener("click", startSpellRec);
+$("spellRecBtn").addEventListener("click", () => startSpellRec("test"));
+$("teachBtn").addEventListener("click", () => startSpellRec("teach"));
+$("teachExportBtn").addEventListener("click", () => personal.length ? downloadCsv(personal, "taught_letters.csv") : setSpellMsg("Teach some letters first.", true));
+$("teachImportBtn").addEventListener("click", () => $("teachImportFile").click());
+$("teachImportFile").addEventListener("change", e => { if (e.target.files[0]) importTaught(e.target.files[0]); e.target.value = ""; });
+$("teachClearBtn").addEventListener("click", e => {
+  const b = e.currentTarget;
+  if (b.dataset.armed) { personal = []; saveTaught(); renderTaught(); rescoreOwn(); setSpellMsg("Taught letters cleared."); delete b.dataset.armed; b.textContent = "Clear taught"; }
+  else { b.dataset.armed = "1"; b.textContent = "Sure?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Clear taught"; }, 2500); }
+});
 $("spellExportBtn").addEventListener("click", exportOwnCsv);
 $("spellClearBtn").addEventListener("click", e => {
   const b = e.currentTarget;
