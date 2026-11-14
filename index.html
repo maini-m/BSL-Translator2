@@ -75,6 +75,11 @@
   hr{border:0;border-top:1px solid var(--line);margin:18px 0}
   .legend{display:flex;gap:14px;font-size:.85rem;color:var(--muted);margin-top:10px;flex-wrap:wrap}
   .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle}
+  .caption{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);max-width:92%;background:rgba(0,0,0,.75);color:#fff;
+    font-size:clamp(1.1rem,2.6vw,1.9rem);font-weight:700;padding:8px 18px;border-radius:12px;text-align:center;line-height:1.3}
+  .caption .spelling{color:#7fe3d9;border-bottom:3px solid #7fe3d9;letter-spacing:.08em}
+  .toggle{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.92rem;cursor:pointer}
+  .toggle input{width:18px;height:18px;accent-color:var(--accent)}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -99,6 +104,7 @@
         <span id="handsBadge" class="badge">No hands</span>
         <span id="recBadge" class="badge rec" hidden>● Recording</span>
       </div>
+      <div id="caption" class="caption" hidden></div>
       <div id="camPrompt" class="cam-prompt">
         <button id="startBtn" class="btn primary" disabled>Loading hand tracker…</button>
         <p id="camMsg">Your video stays on this device. Nothing is uploaded.</p>
@@ -133,6 +139,8 @@
         <button id="undoBtn" class="btn">Undo last</button>
         <button id="clearBtn" class="btn">Clear</button>
       </div>
+      <label class="toggle"><input type="checkbox" id="autoSpeak" checked> Speak each word out loud as it's signed</label>
+      <label class="toggle"><input type="checkbox" id="showCaptions" checked> Show live captions on the video</label>
       <p id="spellHelp" class="hint" hidden>Hold each letter steady until it appears. Lower your hands for a moment to finish a word, or before repeating the same letter.</p>
       <hr>
       <label class="small" for="thr">Confidence needed: <strong id="thrVal">60%</strong></label>
@@ -221,6 +229,7 @@ const SPELL_REC_MS = 2000;  // length of one test-letter recording
 const STORE_KEY = "bsl-translator-samples-v1";
 const OWN_KEY = "bsl-own-letters-v1";
 const TAUGHT_KEY = "bsl-taught-letters-v1";
+const PREFS_KEY = "bsl-prefs-v1";
 const EXTRA_LETTERS = ["C", "H", "J", "Y"]; // not in the Kaggle dataset: only learnable from your own examples
 const SIGMA = 0.5, TAU = 1.3, KNN = 7;      // personal matching: closeness scale, "not close enough" distance, neighbours
 const SMOOTH = 10;                          // average predictions over this many frames
@@ -473,9 +482,11 @@ function spellStep(res, aspect, now, n) {
 
 function endSpellWord() {
   if (!spellWord) return;
-  transcript.push(spellWord.charAt(0) + spellWord.slice(1).toLowerCase());
+  const word = spellWord.charAt(0) + spellWord.slice(1).toLowerCase();
+  transcript.push(word);
   spellWord = "";
   renderTranscript();
+  sayNow(word);
 }
 
 // ---- Own test recordings (honest evaluation on new signers) ----
@@ -716,6 +727,7 @@ function recognise(now) {
     transcript.push(r.label);
     lastEmitted = r.label; lastEmitTime = now;
     renderTranscript();
+    sayNow(r.label);
   }
 }
 
@@ -728,12 +740,44 @@ function showPred(label, conf, meta) {
   $("predMeta").textContent = label ? `${meta} · ${Math.round(conf * 100)}% confidence` : meta;
 }
 
+function renderCaption() {
+  const cap = $("caption");
+  const recent = transcript.slice(-6);
+  if (!$("showCaptions").checked || (!recent.length && !spellWord)) { cap.hidden = true; return; }
+  cap.hidden = false;
+  cap.innerHTML = "";
+  cap.append(document.createTextNode(recent.join(" ") + (recent.length && spellWord ? " " : "")));
+  if (spellWord) { const s = document.createElement("span"); s.className = "spelling"; s.textContent = spellWord; cap.append(s); }
+}
+
 function renderTranscript() {
+  renderCaption();
   const el = $("transcript");
   el.innerHTML = "";
   if (!transcript.length && !spellWord) { el.innerHTML = '<span class="empty">Signed words will appear here.</span>'; return; }
   el.append(document.createTextNode(transcript.join(" ") + (transcript.length && spellWord ? " " : "")));
   if (spellWord) { const s = document.createElement("span"); s.className = "spelling"; s.textContent = spellWord; el.append(s); }
+}
+
+// Speak one new word straight away (queued, so words aren't cut off).
+function sayNow(text) {
+  if (!$("autoSpeak").checked || !text || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-GB";
+  const v = speechSynthesis.getVoices().find(v => v.lang === "en-GB");
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked })); } catch (e) {}
+}
+function loadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+    if (typeof p.autoSpeak === "boolean") $("autoSpeak").checked = p.autoSpeak;
+    if (typeof p.showCaptions === "boolean") $("showCaptions").checked = p.showCaptions;
+  } catch (e) {}
 }
 
 function speak() {
@@ -920,6 +964,8 @@ $("spellClearBtn").addEventListener("click", e => {
   else { b.dataset.armed = "1"; b.textContent = "Sure?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Clear test data"; }, 2500); }
 });
 $("speakBtn").addEventListener("click", speak);
+$("autoSpeak").addEventListener("change", () => { savePrefs(); if (!$("autoSpeak").checked) speechSynthesis?.cancel(); });
+$("showCaptions").addEventListener("change", () => { savePrefs(); renderCaption(); });
 $("spaceBtn").addEventListener("click", endSpellWord);
 $("undoBtn").addEventListener("click", () => {
   if (spellWord) spellWord = spellWord.slice(0, -1); else transcript.pop();
@@ -937,6 +983,7 @@ document.addEventListener("keydown", e => {
 });
 $("wordInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("wordInput").blur(); startRecording(); } });
 
+loadPrefs();
 loadStore();
 renderWords();
 renderTranscript();
