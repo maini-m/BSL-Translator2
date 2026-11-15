@@ -92,6 +92,9 @@
   details.ai{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfaf7}
   details.ai summary{cursor:pointer;font-weight:600}
   details.ai input[type=password],details.ai input[type=text]{margin-top:6px}
+  .toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(200,50,43,.92);color:#fff;
+    font-size:clamp(1.1rem,2.4vw,1.7rem);font-weight:800;padding:12px 22px;border-radius:14px;pointer-events:none}
+  .badge.x{background:#c8322b}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -115,7 +118,9 @@
       <div class="hud">
         <span id="handsBadge" class="badge">No hands</span>
         <span id="recBadge" class="badge rec" hidden>● Recording</span>
+        <span id="xBadge" class="badge x" hidden>✕ Hold to delete…</span>
       </div>
+      <div id="toast" class="toast" hidden></div>
       <div id="caption" class="caption" hidden></div>
       <div id="camPrompt" class="cam-prompt">
         <button id="startBtn" class="btn primary" disabled>Loading hand tracker…</button>
@@ -159,6 +164,8 @@
       </div>
       <label class="toggle"><input type="checkbox" id="autoSpeak" checked> Speak each word out loud as it's signed</label>
       <label class="toggle"><input type="checkbox" id="showCaptions" checked> Show live captions on the video</label>
+      <label class="toggle"><input type="checkbox" id="gestureUndo" checked> Cross your arms in an ✕ to delete the last sign</label>
+      <p id="gestureMsg" class="hint" style="margin-top:4px">Hold the ✕ for half a second. Your shoulders and wrists need to be in view.</p>
       <details class="ai" id="aiBox">
         <summary>✨ Better grammar with AI (optional)</summary>
         <p class="hint">Without this, built-in rules tidy the sentence (works offline). With a Google Gemini API key, AI rewrites it into natural English and suggests alternatives.</p>
@@ -250,7 +257,7 @@
 </main>
 
 <script type="module">
-import { FilesetResolver, HandLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import { FilesetResolver, HandLandmarker, PoseLandmarker, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
 // ---------- Settings ----------
 const T = 16;               // frames per word sign after resampling
@@ -307,6 +314,97 @@ async function initTracker() {
   });
   try { landmarker = await make("GPU"); } catch (e) { landmarker = await make("CPU"); }
   drawer = new DrawingUtils(ctx);
+  initPose(vision); // loads in the background; the ✕ gesture turns on when ready
+}
+
+// ---------- ✕ gesture (cross arms) = delete last sign ----------
+let poser = null, frameNo = 0;
+let xSince = null, xFired = false, xClearSince = null, suppressUntil = 0, toastTimer = null;
+const X_HOLD_MS = 500;      // hold the ✕ this long
+const X_COOLDOWN_MS = 1200; // ignore signs for this long afterwards
+
+async function initPose(vision) {
+  try {
+    poser = await PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        delegate: "GPU"
+      },
+      runningMode: "VIDEO",
+      numPoses: 1
+    });
+  } catch (e) {
+    poser = null;
+    $("gestureMsg").textContent = "The ✕ gesture couldn't load on this device. Use the Undo button instead.";
+  }
+}
+
+// Body points (MediaPipe Pose): 11/12 shoulders, 15/16 wrists.
+// Arms are crossed when the wrists have swapped sides compared with the shoulders,
+// and the hands are raised (around chest/shoulder height, not hanging down).
+function isArmsX(p) {
+  if (!p) return false;
+  const ls = p[11], rs = p[12], lw = p[15], rw = p[16];
+  if (![ls, rs, lw, rw].every(o => o && (o.visibility ?? 1) > 0.5)) return false;
+  const sw = Math.abs(ls.x - rs.x);
+  if (sw < 0.05) return false;
+  const shoulderSide = Math.sign(ls.x - rs.x), wristSide = Math.sign(lw.x - rw.x);
+  const crossed = wristSide !== 0 && wristSide !== shoulderSide && Math.abs(lw.x - rw.x) > 0.35 * sw;
+  const sy = (ls.y + rs.y) / 2;
+  const raised = lw.y < sy + 1.6 * sw && rw.y < sy + 1.6 * sw;
+  return crossed && raised;
+}
+
+function showToast(text) {
+  const t = $("toast");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 1500);
+}
+
+// Returns true while the gesture is in progress (so signing is paused).
+function gestureStep(now) {
+  if (!poser || !$("gestureUndo").checked) { $("xBadge").hidden = true; return false; }
+  frameNo++;
+  if (frameNo % 2 === 0) {           // pose every other frame is plenty
+    let isX = false;
+    try { isX = isArmsX(poser.detectForVideo(video, now).landmarks?.[0]); } catch (e) {}
+    if (isX) {
+      xClearSince = null;
+      if (xSince === null) xSince = now;
+      if (!xFired && now - xSince >= X_HOLD_MS) {
+        xFired = true;
+        const what = undoLast();
+        showToast(what ? `✕ Deleted ${what}` : "✕ Nothing to delete");
+        suppressUntil = now + X_COOLDOWN_MS;
+      }
+    } else {
+      if (xClearSince === null) xClearSince = now;
+      if (now - xClearSince > 300) { xSince = null; xFired = false; }
+    }
+  }
+  const active = xSince !== null;
+  $("xBadge").hidden = !(active && !xFired);
+  if (active || now < suppressUntil) {
+    // pause recognition so the arm movement isn't read as a sign
+    buffer = []; probHist = []; spellStable = null; spellStableN = 0; streak = 0; streakLabel = null;
+    return true;
+  }
+  return false;
+}
+
+// Same as the Undo button. Returns a description of what was removed.
+function undoLast() {
+  if (spellWord) {
+    const letter = spellWord.slice(-1);
+    spellWord = spellWord.slice(0, -1);
+    renderTranscript();
+    return `letter “${letter}”`;
+  }
+  if (!transcript.length) return "";
+  const word = transcript.pop();
+  signsChanged();
+  return `“${word}”`;
 }
 
 async function startCamera() {
@@ -373,7 +471,11 @@ function loop() {
     const n = res.landmarks?.length || 0;
     $("handsBadge").textContent = n === 0 ? "No hands" : n === 1 ? "1 hand" : "2 hands";
 
-    if (mode === "spell") {
+    const paused = !recording && !spellRec && gestureStep(now);
+
+    if (paused) {
+      showPred(null, 0, "✕ Cross-arms gesture: deleting the last sign…");
+    } else if (mode === "spell") {
       if (spellModel) spellStep(res, aspect, now, n);
     } else {
       const hands = toSlots(res, aspect);
@@ -1009,7 +1111,7 @@ function sayNow(text) {
 }
 
 function savePrefs() {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked, aiAuto: $("aiAuto").checked, aiModel: $("aiModel").value.trim() })); } catch (e) {}
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked, aiAuto: $("aiAuto").checked, aiModel: $("aiModel").value.trim(), gestureUndo: $("gestureUndo").checked })); } catch (e) {}
 }
 function loadPrefs() {
   try {
@@ -1017,6 +1119,7 @@ function loadPrefs() {
     if (typeof p.autoSpeak === "boolean") $("autoSpeak").checked = p.autoSpeak;
     if (typeof p.showCaptions === "boolean") $("showCaptions").checked = p.showCaptions;
     if (typeof p.aiAuto === "boolean") $("aiAuto").checked = p.aiAuto;
+    if (typeof p.gestureUndo === "boolean") $("gestureUndo").checked = p.gestureUndo;
     if (p.aiModel) $("aiModel").value = p.aiModel;
     if (getAiKey()) $("aiKey").placeholder = "Key saved in this browser";
   } catch (e) {}
@@ -1209,10 +1312,8 @@ $("speakBtn").addEventListener("click", speak);
 $("autoSpeak").addEventListener("change", () => { savePrefs(); if (!$("autoSpeak").checked) speechSynthesis?.cancel(); });
 $("showCaptions").addEventListener("change", () => { savePrefs(); renderCaption(); });
 $("spaceBtn").addEventListener("click", endSpellWord);
-$("undoBtn").addEventListener("click", () => {
-  if (spellWord) { spellWord = spellWord.slice(0, -1); renderTranscript(); }
-  else { transcript.pop(); signsChanged(); }
-});
+$("undoBtn").addEventListener("click", () => { undoLast(); });
+$("gestureUndo").addEventListener("change", () => { savePrefs(); xSince = null; $("xBadge").hidden = true; });
 $("clearBtn").addEventListener("click", () => { transcript.length = 0; spellWord = ""; lastEmitted = null; aiResult = null; signsChanged(); });
 $("aiSaveBtn").addEventListener("click", () => {
   const k = $("aiKey").value.trim();
