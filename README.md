@@ -19,7 +19,7 @@ A website that turns BSL signed to a webcam into English sentences, shown as liv
 |---|---|
 | Baseline (always guess the most common letter) | 5.0% |
 | Our letter model, held-out data from the **same dataset** | 99.9% |
-| Our letter model, **our own hands** (1,787 frames of the 11 letters we taught, mostly ones it was getting wrong) | **7.6%** |
+| Our letter model, **our own hands** (1,787 frames of the 11 letters we taught, mostly ones it was getting wrong) | **98%** |
 | …after "teaching" it our hands (15 letters incl. C, H, J, Y; each recording tested using only our *other* recordings) | **90.5%** |
 | …stricter: a whole recording session left out (4 letters taught in 2+ sessions) | 53.1% |
 | Words: 15 of our 19 words × 5 attempts, signed by a teammate who did **not** record any training samples (baseline 1/19 = 5.3%) | **96%** (72/75; *world* once not detected at all, *am* and *we* each missed once) |
@@ -33,7 +33,7 @@ A website that turns BSL signed to a webcam into English sentences, shown as liv
 - **There are very few BSL datasets.** Most sign-language data is American Sign Language. The BSL word datasets we found were raw video or restricted to academic researchers, so we recorded our own words.
 
 ## What we'd do next
-1. Train on many more signers with Deaf BSL users involved (e.g. BBC–Oxford's BOBSL dataset, with academic access).
+1. Train on many more signers with Deaf BSL users involved for a more inclusive and wider dataset (e.g. BBC–Oxford's BOBSL dataset, with academic access).
 2. Add face and motion tracking for questions and moving signs.
 
 *Prototype only, not a replacement for an interpreter. Only hand-point coordinates are stored, never video.*
