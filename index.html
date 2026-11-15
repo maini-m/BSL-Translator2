@@ -320,11 +320,13 @@ async function initTracker() {
 // ---------- ✕ gesture (cross arms) = delete last sign ----------
 let poser = null, frameNo = 0;
 let xSince = null, xFired = false, xClearSince = null, suppressUntil = 0, toastTimer = null;
-let nearSince = null, lastPoseHint = 0;
+let nearSince = null, nearClearSince = null, lastPoseHint = 0;
 let history = [];           // snapshots of the translation before each new word/letter
-const X_HOLD_MS = 450;      // hold the ✕ this long
+const X_HOLD_MS = 350;      // hold the ✕ this long
+let poseState = "nobody";   // body tracker result (updated every other frame)
+let signEma = 0, sideN = 0; // which side each hand is usually on (learned while you sign)
 const X_COOLDOWN_MS = 1200; // ignore signs for this long afterwards
-const X_ROLLBACK_MS = 1500; // words added this soon before the ✕ came from moving into it
+const X_ROLLBACK_MS = 1200; // words added this soon before the ✕ came from moving into it
 
 // Save the translation before each change, so the ✕ can undo accidental words.
 function snapshot() {
@@ -402,15 +404,49 @@ function showToast(text) {
 }
 
 // Returns true while the gesture is in progress (so signing is paused).
-function gestureStep(now) {
-  if (!poser || !$("gestureUndo").checked) { $("xBadge").hidden = true; return false; }
+// Hand tracker check: MediaPipe tells us which hand is which ("Left"/"Right").
+// Normally each hand stays on its own side of the picture; when the arms cross into an ✕,
+// the two hands swap sides. We learn the normal side from your signing, so it works
+// whether or not the camera image is mirrored.
+function handsState(res) {
+  const L = res?.landmarks || [], H = res?.handedness || [];
+  if (L.length < 2) return "none";
+  const a = H[0]?.[0]?.categoryName, b = H[1]?.[0]?.categoryName;
+  if (!a || !b || a === b) return "none";
+  const lh = a === "Left" ? L[0] : L[1], rh = a === "Left" ? L[1] : L[0];
+  const d = lh[0].x - rh[0].x;                       // wrist positions
+  if (Math.abs(d) < 0.12) return "near";
+  const side = Math.sign(d);
+  if (xSince === null) {                         // learn only from normal signing, not from an ✕
+    sideN++;
+    signEma = sideN <= 100 ? signEma + (side - signEma) / sideN : signEma * 0.995 + side * 0.005;
+  }
+  if (sideN < 30 || Math.abs(signEma) < 0.5) return "none";   // still learning: rely on the body tracker
+  const normal = signEma > 0 ? 1 : -1;
+  if (side === normal) return "none";
+  if (Math.abs(d) < 0.18) return "near";            // only a small cross (e.g. some signs): ignore
+  if (lh[0].y > 0.95 && rh[0].y > 0.95) return "none";
+  return "x";
+}
+
+// Returns true while the gesture is in progress (so signing is paused).
+function gestureStep(now, res) {
+  if (!$("gestureUndo").checked) { $("xBadge").hidden = true; return false; }
   frameNo++;
-  let state = "nobody";
-  try { state = armsState(poser.detectForVideo(video, now).landmarks?.[0]); } catch (e) {}
-  poseHint(state, now);
-  if (state === "near" || state === "x") { if (nearSince === null) nearSince = now; }
-  else if (state !== "nowrists") nearSince = null;   // wrists often blur while crossing
-  if (state === "x") {
+  if (poser && frameNo % 2 === 0) {        // body tracker every other frame keeps video smooth
+    try { poseState = armsState(poser.detectForVideo(video, now).landmarks?.[0]); } catch (e) {}
+    poseHint(poseState, now);
+  }
+  const hs = handsState(res);
+  const isX = hs === "x" || poseState === "x";
+  const isNear = hs === "near" || poseState === "near";
+  if (isX || isNear) { if (nearSince === null) nearSince = now; nearClearSince = null; }
+  else {
+    if (nearClearSince === null) nearClearSince = now;
+    if (now - nearClearSince > 300) nearSince = null;   // short gaps (blurry wrists) don't reset it
+  }
+
+  if (isX) {
     xClearSince = null;
     if (xSince === null) xSince = now;
     if (!xFired && now - xSince >= X_HOLD_MS) {
@@ -425,12 +461,12 @@ function gestureStep(now) {
     }
   } else {
     if (xClearSince === null) xClearSince = now;
-    if (now - xClearSince > 300) { xSince = null; xFired = false; }
+    if (now - xClearSince > 250) { xSince = null; xFired = false; }
   }
   const active = xSince !== null;
   $("xBadge").hidden = !(active && !xFired);
   if (active || now < suppressUntil) {
-    // pause recognition so the arm movement isn't read as a sign
+    // pause recognition the moment the arms cross, so the ✕ isn't read as a sign
     buffer = []; probHist = []; spellStable = null; spellStableN = 0; streak = 0; streakLabel = null;
     return true;
   }
@@ -516,7 +552,7 @@ function loop() {
     $("handsBadge").textContent = n === 0 ? "No hands" : n === 1 ? "1 hand" : "2 hands";
 
     const stopped = $("pauseOn").checked && !recording && !spellRec;   // "Stop translating" ticked
-    const paused = !stopped && !recording && !spellRec && gestureStep(now);
+    const paused = !stopped && !recording && !spellRec && gestureStep(now, res);
 
     if (stopped) {
       if ($("predMeta").textContent.indexOf("stopped") === -1)
