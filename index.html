@@ -55,7 +55,7 @@
   button.record{background:var(--rec);border-color:var(--rec);color:#fff}
   button:disabled{opacity:.45;cursor:not-allowed}
   label.small,.small{font-size:.85rem;color:var(--muted)}
-  input[type=text],select{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);width:100%;background:#fff}
+  input[type=text],input[type=password],select{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);width:100%;background:#fff}
   input[type=range]{width:100%}
   .hint{font-size:.85rem;color:var(--muted);margin:8px 0 0}
   .msg{font-size:.9rem;margin-top:8px;min-height:1.3em;color:var(--accent);font-weight:600}
@@ -89,9 +89,8 @@
   .alt.chosen{background:var(--accent-soft);border-color:var(--accent)}
   .tag{display:inline-block;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:2px 7px;border-radius:6px;background:#eeeae2;color:var(--muted);margin-left:6px;vertical-align:middle}
   .tag.ai{background:#efe6ff;color:#5b2bb5}
-  details.ai{margin-top:14px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfaf7}
-  details.ai summary{cursor:pointer;font-weight:600}
-  details.ai input[type=password],details.ai input[type=text]{margin-top:6px}
+  .ai-panel{margin:6px 0 4px 26px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfaf7}
+  .ai-panel input{margin-top:6px}
   .toast{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(200,50,43,.92);color:#fff;
     font-size:clamp(1.1rem,2.4vw,1.7rem);font-weight:800;padding:12px 22px;border-radius:14px;pointer-events:none}
   .badge.x{background:#c8322b}
@@ -166,22 +165,17 @@
       <label class="toggle"><input type="checkbox" id="showCaptions" checked> Show live captions on the video</label>
       <label class="toggle"><input type="checkbox" id="gestureUndo" checked> Cross your arms in an ✕ to delete the last sign</label>
       <p id="gestureMsg" class="hint" style="margin-top:4px">Hold the ✕ for half a second. Your shoulders and wrists need to be in view.</p>
-      <details class="ai" id="aiBox">
-        <summary>✨ Better grammar with AI (optional)</summary>
-        <p class="hint">Without this, built-in rules tidy the sentence (works offline). With a Google Gemini API key, AI rewrites it into natural English and suggests alternatives.</p>
-        <p class="hint"><strong>Only the recognised words are sent to Google</strong>, never video. The key stays in this browser; <strong>never put it in GitHub</strong>. Google's terms require API users to be 18+, so ask a teacher or mentor to create the key at aistudio.google.com.</p>
-        <label class="small" for="aiKey">Gemini API key</label>
-        <input id="aiKey" type="password" placeholder="Paste key here" autocomplete="off">
-        <label class="small" for="aiModel" style="display:block;margin-top:8px">Model</label>
-        <input id="aiModel" type="text" value="gemini-2.5-flash" autocomplete="off">
-        <label class="toggle"><input type="checkbox" id="aiAuto" checked> Improve automatically after each word</label>
+      <label class="toggle"><input type="checkbox" id="aiOn"> Better grammar with AI</label>
+      <div id="aiPanel" class="ai-panel" hidden>
+        <div class="small">Model: gemini-2.5-flash</div>
+        <input id="aiKey" type="password" placeholder="Paste Gemini API key" autocomplete="off">
         <div class="row">
           <button id="aiSaveBtn" class="btn primary">Save key</button>
-          <button id="aiNowBtn" class="btn">Improve now</button>
           <button id="aiForgetBtn" class="btn">Forget key</button>
         </div>
         <div id="aiStatus" class="msg"></div>
-      </details>
+      </div>
+      <label class="toggle"><input type="checkbox" id="pauseOn"> Stop translating</label>
       <p id="spellHelp" class="hint" hidden>Hold each letter steady until it appears. Lower your hands for a moment to finish a word, or before repeating the same letter.</p>
       <hr>
       <label class="small" for="thr">Confidence needed: <strong id="thrVal">60%</strong></label>
@@ -274,6 +268,7 @@ const OWN_KEY = "bsl-own-letters-v1";
 const TAUGHT_KEY = "bsl-taught-letters-v1";
 const PREFS_KEY = "bsl-prefs-v1";
 const AI_KEY = "bsl-ai-key-v1";
+const AI_MODEL = "gemini-2.5-flash";
 // Team training files kept in the GitHub repo next to index.html. Everyone who opens the site gets them.
 const TEAM_WORDS_FILE = "bsl-samples.json";
 const TEAM_LETTERS_FILE = "taught_letters.csv";
@@ -520,9 +515,13 @@ function loop() {
     const n = res.landmarks?.length || 0;
     $("handsBadge").textContent = n === 0 ? "No hands" : n === 1 ? "1 hand" : "2 hands";
 
-    const paused = !recording && !spellRec && gestureStep(now);
+    const stopped = $("pauseOn").checked && !recording && !spellRec;   // "Stop translating" ticked
+    const paused = !stopped && !recording && !spellRec && gestureStep(now);
 
-    if (paused) {
+    if (stopped) {
+      if ($("predMeta").textContent.indexOf("stopped") === -1)
+        showPred(null, 0, "⏸ Translation stopped. Untick “Stop translating” to continue.");
+    } else if (paused) {
       showPred(null, 0, "✕ Cross-arms gesture: deleting the last sign…");
     } else if (mode === "spell") {
       if (spellModel) spellStep(res, aspect, now, n);
@@ -1039,7 +1038,7 @@ const glossKey = () => cleanTokens().join(" ");
 function currentTranslation() {
   const tokens = cleanTokens();
   const rule = tidyGloss(tokens);
-  const useAi = aiResult && aiFor === glossKey() && aiResult.best;
+  const useAi = $("aiOn").checked && aiResult && aiFor === glossKey() && aiResult.best;
   const options = [];
   const add = (text, src) => { text = (text || "").trim(); if (text && !options.some(o => o.text.toLowerCase() === text.toLowerCase())) options.push({ text, src }); };
   if (useAi) { add(aiResult.best, "ai"); aiResult.alternatives.forEach(a => add(a, "ai")); }
@@ -1125,7 +1124,7 @@ function setAiStatus(text, err = false) { const m = $("aiStatus"); m.textContent
 function getAiKey() { try { return localStorage.getItem(AI_KEY) || ""; } catch (e) { return ""; } }
 
 function scheduleAI() {
-  if (!getAiKey() || !$("aiAuto").checked || !cleanTokens().length) return;
+  if (!$("aiOn").checked || !getAiKey() || !cleanTokens().length) return;
   clearTimeout(aiTimer);
   const wait = Math.max(1200, 6500 - (Date.now() - aiLastCall)); // stay under the free-tier rate limit
   aiTimer = setTimeout(runAI, wait);
@@ -1141,7 +1140,7 @@ async function runAI(force = false) {
   aiBusy = true; aiLastCall = Date.now();
   setAiStatus("Asking AI…");
   try {
-    const model = ($("aiModel").value || "gemini-2.5-flash").trim();
+    const model = AI_MODEL;
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
@@ -1189,16 +1188,17 @@ function sayNow(text) {
 }
 
 function savePrefs() {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked, aiAuto: $("aiAuto").checked, aiModel: $("aiModel").value.trim(), gestureUndo: $("gestureUndo").checked })); } catch (e) {}
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ autoSpeak: $("autoSpeak").checked, showCaptions: $("showCaptions").checked, aiOn: $("aiOn").checked, gestureUndo: $("gestureUndo").checked })); } catch (e) {}
 }
 function loadPrefs() {
   try {
     const p = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
     if (typeof p.autoSpeak === "boolean") $("autoSpeak").checked = p.autoSpeak;
     if (typeof p.showCaptions === "boolean") $("showCaptions").checked = p.showCaptions;
-    if (typeof p.aiAuto === "boolean") $("aiAuto").checked = p.aiAuto;
+    if (typeof p.aiOn === "boolean") $("aiOn").checked = p.aiOn;
+    $("aiPanel").hidden = !$("aiOn").checked;
     if (typeof p.gestureUndo === "boolean") $("gestureUndo").checked = p.gestureUndo;
-    if (p.aiModel) $("aiModel").value = p.aiModel;
+
     if (getAiKey()) $("aiKey").placeholder = "Key saved in this browser";
   } catch (e) {}
 }
@@ -1419,17 +1419,25 @@ $("aiSaveBtn").addEventListener("click", () => {
   if (!k) { setAiStatus("Paste a key first.", true); return; }
   try { localStorage.setItem(AI_KEY, k); } catch (e) {}
   $("aiKey").value = ""; $("aiKey").placeholder = "Key saved in this browser";
-  setAiStatus("Key saved. Sign something, or press Improve now.");
+  setAiStatus("Key saved.");
   if (cleanTokens().length) runAI(true);
 });
-$("aiNowBtn").addEventListener("click", () => runAI(true));
 $("aiForgetBtn").addEventListener("click", () => {
   try { localStorage.removeItem(AI_KEY); } catch (e) {}
   aiResult = null; $("aiKey").placeholder = "Paste key here";
   setAiStatus("Key removed from this browser."); renderTranscript();
 });
-$("aiAuto").addEventListener("change", savePrefs);
-$("aiModel").addEventListener("change", savePrefs);
+$("aiOn").addEventListener("change", () => {
+  $("aiPanel").hidden = !$("aiOn").checked;
+  savePrefs();
+  if ($("aiOn").checked) { if (getAiKey()) runAI(true); else setAiStatus(""); }
+  renderTranscript();
+});
+$("pauseOn").addEventListener("change", () => {
+  buffer = []; probHist = []; spellStable = null; spellStableN = 0; streak = 0; streakLabel = null;
+  xSince = null; $("xBadge").hidden = true;
+  showPred(null, 0, $("pauseOn").checked ? "⏸ Translation stopped. Untick “Stop translating” to continue." : "Waiting for hands…");
+});
 $("thr").addEventListener("input", e => $("thrVal").textContent = e.target.value + "%");
 $("exportBtn").addEventListener("click", download);
 $("importBtn").addEventListener("click", () => $("importFile").click());
