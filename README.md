@@ -23,7 +23,8 @@ A website that turns BSL signed to a webcam into English sentences, shown as liv
 | Live test after teaching: 10 letters × 5 attempts, signed by [TO FILL: who] | **98%** (49/50; one miss on N) |
 | Words: 15 of our 19 words × 5 attempts, signed by a teammate who did **not** record any training samples (baseline 1/19 = 5.3%) | **96%** (72/75; *world* once not detected at all, *am* and *we* each missed once) |
 
-Results - discussion
+Results - discussion:
+
 99.9% was too good to be true: the dataset comes from very few signers, and on our hands many letters were wrong at first, while C, H, J and Y aren't in the dataset at all. "Teaching" the site a few examples of our own hands fixed this. We only track hands, so questions shown by raised eyebrows are missed. It worked equally well for each teammate, but only when signs were clear and not too fast. We could only test on our own small team, not a wide range of signers.
 
 **What we learned**
@@ -35,6 +36,7 @@ Results - discussion
 ## What we'd do next
 1. Train on many more signers with Deaf BSL users involved (e.g. BBC–Oxford's BOBSL dataset, with academic access).
 2. Add face and motion tracking for questions and moving signs.
+3. Faster translation - (will be possible through providing a bigger dataset and thus improving the confidence of the system)
 
 *Prototype only, not a replacement for an interpreter as still prone to error and does not have large range of words stored in the dataset. Only hand-point coordinates are stored, never video.*
 
