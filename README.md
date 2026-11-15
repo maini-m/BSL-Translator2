@@ -2,7 +2,7 @@
 
 **Track:** Languages
 **Team:** WIMD
-**▶ Try it:** [TO FILL: https://YOUR-USERNAME.github.io/bsl-translator/] (Chrome, webcam, no install, no video leaves your device)
+**▶ Try it:** [(https://maini-m.github.io/BSL-Translator2/)] (Chrome, webcam, no install, no video leaves your device)
 
 ## The problem
 About 151,000 people in the UK use British Sign Language (87,000 of them Deaf), but there are only about 900 registered interpreters, so everyday conversations often have no one to translate. Most sign-language tech is built for American Sign Language, which is a different language with a one-handed alphabet. BSL's is two-handed.
@@ -35,7 +35,7 @@ A website that turns BSL signed to a webcam into English sentences, shown as liv
 1. Train on many more signers with Deaf BSL users involved (e.g. BBC–Oxford's BOBSL dataset, with academic access).
 2. Add face and motion tracking for questions and moving signs.
 
-*Prototype only, not a replacement for an interpreter. Only hand-point coordinates are stored, never video.*
+*Prototype only, not a replacement for an interpreter as still prone to error and does not have large range of words stored in the dataset. Only hand-point coordinates are stored, never video.*
 
 ## Sources
 Data: [BSL Numbers & Alphabet Hand Position for MediaPipe (Kaggle)](https://www.kaggle.com/datasets/erentatepe/bsl-numbers-and-alphabet-hand-position-for-mediapipe) · Models: [MediaPipe Hand](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) and [Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker), [Gemini API](https://ai.google.dev/gemini-api/docs) (optional) · Libraries: [scikit-learn](https://scikit-learn.org), pandas, NumPy · Facts: [British Deaf Association](https://bda.org.uk/bsl-deaf-culture/) · Future work: [BOBSL](https://www.robots.ox.ac.uk/~vgg/data/bobsl/), [BSLDict](https://www.robots.ox.ac.uk/~vgg/research/bsldict/)
