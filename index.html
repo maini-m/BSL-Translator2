@@ -217,6 +217,7 @@
         </div>
         <p class="hint">Export and share the file so teammates can import each other's recordings. You can also import BSLDict data made with the Colab script.</p>
         <div id="storeMsg" class="msg err"></div>
+        <p id="teamWordsMsg" class="hint"></p>
       </div>
 
       <!-- Fingerspelling mode: test the trained model on new people -->
@@ -232,6 +233,7 @@
         <div id="spellMsg" class="msg"></div>
         <p class="hint">Aim for <strong>3 teaching recordings per problem letter</strong>; move your hands slightly between them. For H and J, hold the end position.</p>
         <ul id="taughtList" class="words"></ul>
+        <p id="teamLettersMsg" class="hint"></p>
         <div class="row">
           <button id="teachExportBtn" class="btn">Export taught letters</button>
           <button id="teachImportBtn" class="btn">Import</button>
@@ -272,6 +274,9 @@ const OWN_KEY = "bsl-own-letters-v1";
 const TAUGHT_KEY = "bsl-taught-letters-v1";
 const PREFS_KEY = "bsl-prefs-v1";
 const AI_KEY = "bsl-ai-key-v1";
+// Team training files kept in the GitHub repo next to index.html. Everyone who opens the site gets them.
+const TEAM_WORDS_FILE = "bsl-samples.json";
+const TEAM_LETTERS_FILE = "taught_letters.csv";
 const EXTRA_LETTERS = ["C", "H", "J", "Y"]; // not in the Kaggle dataset: only learnable from your own examples
 const SIGMA = 0.5, TAU = 1.3, KNN = 7;      // personal matching: closeness scale, "not close enough" distance, neighbours
 const SMOOTH = 10;                          // average predictions over this many frames
@@ -776,22 +781,47 @@ function downloadCsv(rows, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+const taughtKey = (label, raw) => label + "|" + raw.join(",");
+
+// Adds taught-letter rows from CSV text (Kaggle format). Skips rows already loaded.
+function addTaughtCsv(text) {
+  const have = new Set(personal.map(p => taughtKey(p.label, p.raw)));
+  let added = 0, total = 0;
+  for (const line of text.trim().split(/\r?\n/)) {
+    const parts = line.split(",");
+    if (parts.length !== 127) continue;
+    const raw = parts.slice(0, 126).map(Number);
+    const label = parts[126].split(" - ")[1]?.trim().toUpperCase();
+    if (!label || !(label in letterIdx) || raw.some(isNaN)) continue;
+    total++;
+    const key = taughtKey(label, raw);
+    if (have.has(key)) continue;
+    have.add(key);
+    personal.push({ label, raw, feat: spellFeatures(raw) });
+    added++;
+  }
+  return { added, total };
+}
+
 async function importTaught(file) {
   try {
-    const lines = (await file.text()).trim().split(/\r?\n/);
-    let added = 0;
-    for (const line of lines) {
-      const parts = line.split(",");
-      if (parts.length !== 127) continue;
-      const raw = parts.slice(0, 126).map(Number);
-      const label = parts[126].split(" - ")[1]?.trim().toUpperCase();
-      if (!label || !(label in letterIdx) || raw.some(isNaN)) continue;
-      personal.push({ label, raw, feat: spellFeatures(raw) });
-      added++;
-    }
+    const { added, total } = addTaughtCsv(await file.text());
     saveTaught(); renderTaught(); rescoreOwn();
-    setSpellMsg(`Imported ${added} taught frames.`, added === 0);
+    setSpellMsg(`Imported ${added} taught frames${total > added ? ` (${total - added} were already here)` : ""}.`, total === 0);
   } catch (e) { setSpellMsg("Couldn't read that file.", true); }
+}
+
+// Load the team's taught letters from the repo (if the file is there).
+async function loadTeamLetters() {
+  try {
+    const r = await fetch(TEAM_LETTERS_FILE, { cache: "no-cache" });
+    if (!r.ok) return;
+    const text = await r.text();
+    const { total } = addTaughtCsv(text);
+    const letters = new Set(personal.map(p => p.label)).size;
+    renderTaught(); rescoreOwn();
+    if (total) $("teamLettersMsg").textContent = `Includes the team's taught letters from the website: ${total} frames.`;
+  } catch (e) { /* no team file yet */ }
 }
 
 function saveOwn() {
@@ -821,6 +851,7 @@ async function loadSpellModel() {
     $("letterSel").innerHTML = allLetters.map(c =>
       `<option value="${c}">${c}${spellModel.classes.includes(c) ? "" : " (teach first)"}</option>`).join("");
     loadTaught(); renderTaught();
+    loadTeamLetters();
     loadOwn(); renderOwn();
     $("spellRecBtn").disabled = $("teachBtn").disabled = !cameraOn;
   } catch (e) {
@@ -1259,16 +1290,37 @@ function exportData() {
   return { format: "bsl-landmarks-v1", samples: samples.map(s => ({ label: s.label, source: s.source || "webcam", frames: s.frames })) };
 }
 
-function addSamples(list) {
-  let added = 0, skipped = 0;
+const sampleKey = (label, frames) => label + "|" + JSON.stringify(frames);
+
+function addSamples(list, source) {
+  let added = 0, skipped = 0, dupes = 0;
+  const have = new Set(samples.map(s => sampleKey(s.label, s.frames)));
   for (const s of list || []) {
     const label = String(s.label || "").trim().toLowerCase();
     const prep = label && Array.isArray(s.frames) ? prepare(s.frames) : null;
     if (!prep) { skipped++; continue; }
-    samples.push({ label, frames: prep, feat: featurize(prep), source: s.source || "import" });
+    const key = sampleKey(label, prep);
+    if (have.has(key)) { dupes++; continue; }   // same recording already loaded
+    have.add(key);
+    samples.push({ label, frames: prep, feat: featurize(prep), source: source || s.source || "import" });
     added++;
   }
-  return { added, skipped };
+  return { added, skipped, dupes };
+}
+
+// Load the team's word recordings from the repo (if the file is there).
+async function loadTeamWords() {
+  try {
+    const r = await fetch(TEAM_WORDS_FILE, { cache: "no-cache" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const { added } = addSamples(data.samples, "team");
+    const total = (data.samples || []).length;
+    const words = new Set((data.samples || []).map(x => String(x.label).toLowerCase())).size;
+    renderWords();
+    $("teamWordsMsg").textContent = `Includes the team's training from the website: ${total} samples of ${words} words` +
+      (added < total ? ` (${total - added} were already saved here)` : "") + ".";
+  } catch (e) { /* no team file yet */ }
 }
 
 function saveStore() {
@@ -1392,6 +1444,7 @@ $("wordInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.pre
 loadPrefs();
 loadStore();
 renderWords();
+loadTeamWords();
 renderTranscript();
 loadSpellModel();
 initTracker()
