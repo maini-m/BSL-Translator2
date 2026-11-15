@@ -8,7 +8,7 @@
 About 151,000 people in the UK use British Sign Language (87,000 of them Deaf), but there are only about 900 registered interpreters, so everyday conversations often have no one to translate. Most sign-language tech is built for American Sign Language, which is a different language with a one-handed alphabet. BSL's is two-handed.
 
 ## What we built
-A website that turns BSL signed to a webcam into English sentences, shown as live captions and spoken aloud. It recognises **words** our team recorded and the **fingerspelled alphabet**, rearranges BSL word order into English (*YOU NAME WHAT* → "What is your name?"), and lets anyone **teach it their own hands** in seconds. Crossing your arms in an ✕ deletes the last sign.
+A website that turns BSL signed to a webcam into English sentences, shown as live captions and spoken aloud. It recognises **words** our team recorded and the **fingerspelled alphabet**, when it has a larger data set it  will rearrange BSL word order into English (*YOU NAME WHAT* → "What is your name?"), and lets anyone **teach it their own hands** in seconds. Crossing your arms in an ✕ deletes the last sign.
 
 ## How it works
 **Data:** 19,713 two-handed alphabet examples (22 letters + 10) from a public Kaggle dataset, plus 399 recordings of 19 words (21 per word) made entirely by our team, with consent (no outside dataset). Each example is MediaPipe's 21 points per hand, centred, scaled and mirrored, so position, distance and handedness don't matter.
