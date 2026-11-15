@@ -320,8 +320,17 @@ async function initTracker() {
 // ---------- ✕ gesture (cross arms) = delete last sign ----------
 let poser = null, frameNo = 0;
 let xSince = null, xFired = false, xClearSince = null, suppressUntil = 0, toastTimer = null;
-const X_HOLD_MS = 500;      // hold the ✕ this long
+let nearSince = null, lastPoseHint = 0;
+let history = [];           // snapshots of the translation before each new word/letter
+const X_HOLD_MS = 450;      // hold the ✕ this long
 const X_COOLDOWN_MS = 1200; // ignore signs for this long afterwards
+const X_ROLLBACK_MS = 1500; // words added this soon before the ✕ came from moving into it
+
+// Save the translation before each change, so the ✕ can undo accidental words.
+function snapshot() {
+  history.push({ t: performance.now(), transcript: [...transcript], spellWord });
+  if (history.length > 40) history.shift();
+}
 
 async function initPose(vision) {
   try {
@@ -342,17 +351,47 @@ async function initPose(vision) {
 // Body points (MediaPipe Pose): 11/12 shoulders, 15/16 wrists.
 // Arms are crossed when the wrists have swapped sides compared with the shoulders,
 // and the hands are raised (around chest/shoulder height, not hanging down).
-function isArmsX(p) {
-  if (!p) return false;
+// Returns "x" (arms crossed), "near" (raised hands close together: could be moving into an ✕),
+// "none", or a reason the body can't be seen.
+function armsState(p) {
+  if (!p) return "nobody";
   const ls = p[11], rs = p[12], lw = p[15], rw = p[16];
-  if (![ls, rs, lw, rw].every(o => o && (o.visibility ?? 1) > 0.5)) return false;
+  const seen = o => o && (o.visibility ?? 1) > 0.3;
+  if (!seen(ls) || !seen(rs)) return "noshoulders";
+  if (!seen(lw) || !seen(rw)) return "nowrists";
   const sw = Math.abs(ls.x - rs.x);
-  if (sw < 0.05) return false;
+  if (sw < 0.05) return "none";
   const shoulderSide = Math.sign(ls.x - rs.x), wristSide = Math.sign(lw.x - rw.x);
-  const crossed = wristSide !== 0 && wristSide !== shoulderSide && Math.abs(lw.x - rw.x) > 0.35 * sw;
+  const gap = Math.abs(lw.x - rw.x);
   const sy = (ls.y + rs.y) / 2;
-  const raised = lw.y < sy + 1.6 * sw && rw.y < sy + 1.6 * sw;
-  return crossed && raised;
+  const raised = lw.y < sy + 2.0 * sw && rw.y < sy + 2.0 * sw;
+  if (!raised) return "none";
+  if (wristSide !== 0 && wristSide !== shoulderSide && gap > 0.15 * sw) return "x";
+  if (gap < 0.6 * sw) return "near";
+  return "none";
+}
+const isArmsX = p => armsState(p) === "x";
+
+function poseHint(state, now) {
+  if (now - lastPoseHint < 500) return;
+  lastPoseHint = now;
+  $("gestureMsg").textContent = {
+    nobody: "Body not visible: sit back so your head and shoulders are in view.",
+    noshoulders: "Can't see both shoulders: sit a little further back.",
+    nowrists: "Can see your shoulders but not both wrists. Raise your hands into view.",
+  }[state] || "✓ Ready: shoulders and wrists visible. Hold the ✕ for half a second.";
+}
+
+// Put the translation back to how it was at time t (undoing words added since).
+function rollbackTo(t) {
+  const i = history.findIndex(h => h.t >= t);
+  if (i === -1) return 0;
+  const h = history[i];
+  const removed = transcript.length - h.transcript.length + (spellWord.length - h.spellWord.length);
+  transcript.splice(0, transcript.length, ...h.transcript);
+  spellWord = h.spellWord;
+  history = history.slice(0, i);
+  return Math.max(0, removed);
 }
 
 function showToast(text) {
@@ -366,22 +405,27 @@ function showToast(text) {
 function gestureStep(now) {
   if (!poser || !$("gestureUndo").checked) { $("xBadge").hidden = true; return false; }
   frameNo++;
-  if (frameNo % 2 === 0) {           // pose every other frame is plenty
-    let isX = false;
-    try { isX = isArmsX(poser.detectForVideo(video, now).landmarks?.[0]); } catch (e) {}
-    if (isX) {
-      xClearSince = null;
-      if (xSince === null) xSince = now;
-      if (!xFired && now - xSince >= X_HOLD_MS) {
-        xFired = true;
-        const what = undoLast();
-        showToast(what ? `✕ Deleted ${what}` : "✕ Nothing to delete");
-        suppressUntil = now + X_COOLDOWN_MS;
-      }
-    } else {
-      if (xClearSince === null) xClearSince = now;
-      if (now - xClearSince > 300) { xSince = null; xFired = false; }
+  let state = "nobody";
+  try { state = armsState(poser.detectForVideo(video, now).landmarks?.[0]); } catch (e) {}
+  poseHint(state, now);
+  if (state === "near" || state === "x") { if (nearSince === null) nearSince = now; }
+  else if (state !== "nowrists") nearSince = null;   // wrists often blur while crossing
+  if (state === "x") {
+    xClearSince = null;
+    if (xSince === null) xSince = now;
+    if (!xFired && now - xSince >= X_HOLD_MS) {
+      xFired = true;
+      // 1) undo anything the arm movement was mistaken for
+      const from = Math.max(xSince - X_ROLLBACK_MS, nearSince ?? xSince);
+      if (rollbackTo(from)) signsChanged();
+      // 2) then delete the last real sign
+      const what = undoLast();
+      showToast(what ? `✕ Deleted ${what}` : "✕ Nothing to delete");
+      suppressUntil = now + X_COOLDOWN_MS;
     }
+  } else {
+    if (xClearSince === null) xClearSince = now;
+    if (now - xClearSince > 300) { xSince = null; xFired = false; }
   }
   const active = xSince !== null;
   $("xBadge").hidden = !(active && !xFired);
@@ -611,6 +655,7 @@ function spellStep(res, aspect, now, n) {
   const translating = !$("tab-translate").hidden;
   if (translating && !spellRec && spellStableN >= SPELL_STABLE && conf >= thr &&
       now - spellLastEmitT > 500 && (letter !== spellLastEmit || now - spellLastEmitT > 1800)) {
+    snapshot();
     spellWord += letter;
     spellLastEmit = letter; spellLastEmitT = now;
     renderTranscript();
@@ -619,6 +664,7 @@ function spellStep(res, aspect, now, n) {
 
 function endSpellWord() {
   if (!spellWord) return;
+  snapshot();
   const word = spellWord.charAt(0) + spellWord.slice(1).toLowerCase();
   transcript.push(word);
   spellWord = "";
@@ -861,6 +907,7 @@ function recognise(now) {
   const translating = !$("tab-translate").hidden;
   if (translating && streak >= STABLE && r.conf >= thr && r.label !== "rest" &&
       now - lastEmitTime > 1000 && (r.label !== lastEmitted || now - lastEmitTime > 3000)) {
+    snapshot();
     transcript.push(r.label);
     lastEmitted = r.label; lastEmitTime = now;
     signsChanged();
@@ -1314,7 +1361,7 @@ $("showCaptions").addEventListener("change", () => { savePrefs(); renderCaption(
 $("spaceBtn").addEventListener("click", endSpellWord);
 $("undoBtn").addEventListener("click", () => { undoLast(); });
 $("gestureUndo").addEventListener("change", () => { savePrefs(); xSince = null; $("xBadge").hidden = true; });
-$("clearBtn").addEventListener("click", () => { transcript.length = 0; spellWord = ""; lastEmitted = null; aiResult = null; signsChanged(); });
+$("clearBtn").addEventListener("click", () => { transcript.length = 0; spellWord = ""; lastEmitted = null; aiResult = null; history = []; signsChanged(); });
 $("aiSaveBtn").addEventListener("click", () => {
   const k = $("aiKey").value.trim();
   if (!k) { setAiStatus("Paste a key first.", true); return; }
